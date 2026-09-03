@@ -92,6 +92,7 @@ model Tenant {
   activity        Activity[]
   botSessions     BotSession[]
   invoices        Invoice[]
+  reviews         Review[]
 }
 
 model City {
@@ -164,6 +165,11 @@ model Provider {
   pinAttempts   Int      @default(0)
   pinLockedUntil DateTime?
   pushSubscription String? // web push subscription JSON
+  // payments — provider can have multiple UPI IDs
+  upiIds        String   @default("[]") // JSON array of {id, vpa, label, isDefault}
+  // feedback — per-provider Google Business review link
+  googleReviewUrl String? // e.g. https://g.page/r/CXXXX/review
+  feedbackEnabled Boolean @default(true) // ask customer for feedback after delivery
   lastSeenAt    DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -171,7 +177,30 @@ model Provider {
   rejectedOrders Order[] @relation("RejectedOrders")
   broadcasts    OrderBroadcast[]
   activity      Activity[]
+  reviews       Review[]
   @@unique([tenantId, phone])
+}
+
+// ─────────────────────────────────────────────────────────────
+// REVIEWS / FEEDBACK
+// ─────────────────────────────────────────────────────────────
+
+model Review {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  providerId  String
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  rating      Int      // 1-5
+  comment     String?
+  // whether the customer also left a Google review (tracked via link click)
+  googleReviewClicked Boolean @default(false)
+  createdAt   DateTime @default(now())
+  @@unique([orderId])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -193,6 +222,7 @@ model Customer {
   updatedAt     DateTime @updatedAt
   orders        Order[]
   botSessions   BotSession[]
+  reviews       Review[]
   @@unique([tenantId, phone])
 }
 
@@ -213,6 +243,9 @@ model Service {
   labels        String   @default("{}") // {"en":"Birthday Cake","hi":"जन्मदिन का केक"}
   questions     String   @default("{}") // per-lang question templates
   options       String   @default("{}") // per-lang list options
+  // default charges (paise) — provider can override per order
+  defaultDeliveryCharge Int? @default(0) // for order kind (cake/grocery/parcel)
+  defaultServiceCharge  Int? @default(0) // for book kind (repair/ride base charge)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   orders        Order[]
@@ -261,8 +294,15 @@ model Order {
   quoteAmount   Int?     // paise
   quoteDelivery String?  // estimated delivery text
   quoteStatus   String?  // pending | accepted | declined | negotiated
+  // charges breakdown (set by provider at accept time)
+  deliveryCharge  Int?    @default(0) // paise — delivery charge (order kind)
+  serviceCharge   Int?    @default(0) // paise — service/base charge (book kind)
+  addonsCharge    Int?    @default(0) // paise — add-ons cost (e.g., spare parts for repair)
+  itemsTotal      Int?    @default(0) // paise — estimated items cost (provider can enter)
+  totalAmount     Int?    @default(0) // paise — grand total = items + delivery + service + addons
+  chargesConfirmed Boolean @default(false) // true once customer agrees to the charges
   // payments (UPI / Razorpay)
-  paymentAmount      Int?       // paise — amount to collect
+  paymentAmount      Int?       // paise — amount to collect (equals totalAmount)
   paymentMethod      String?    // upi | cash | razorpay
   paymentStatus      String?    @default("none") // none | requested | paid | failed
   paymentRequestedAt DateTime?
@@ -277,6 +317,7 @@ model Order {
   source        String   @default("bot") // bot | manual
   activity      Activity[]
   broadcasts    OrderBroadcast[]
+  review        Review?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   @@unique([tenantId, code])

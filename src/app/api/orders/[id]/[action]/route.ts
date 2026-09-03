@@ -167,7 +167,33 @@ export async function POST(
     if (newStatus === "picked") {
       await notifyCustomer(`📦 Your order #${order.code} has been picked up and is on the way.`);
     } else if (newStatus === "delivered") {
-      await notifyCustomer(`🎉 Order #${order.code} delivered! Thank you for choosing us. Rate your experience: ⭐⭐⭐⭐⭐`);
+      // Check if provider has feedback enabled
+      const provider = order.acceptedById ? await db.provider.findUnique({ where: { id: order.acceptedById }, select: { feedbackEnabled: true, googleReviewUrl: true, name: true } }) : null;
+      if (provider?.feedbackEnabled) {
+        // Send feedback request with rating buttons
+        const { sendWhatsAppButtons, sendWhatsAppText } = await import("@/lib/whatsapp");
+        const feedbackMsg = `🎉 Order #${order.code} delivered!\n\nHow was your experience with ${provider.name}? Please rate:`;
+        const btnResult = await sendWhatsAppButtons(
+          order.tenantId,
+          order.customer.phone,
+          feedbackMsg,
+          [
+            { id: `rate_5_${order.id}`, label: "⭐⭐⭐⭐⭐ Excellent" },
+            { id: `rate_4_${order.id}`, label: "⭐⭐⭐⭐ Good" },
+            { id: `rate_3_${order.id}`, label: "⭐⭐⭐ OK" },
+          ]
+        );
+        if (btnResult.skipped) {
+          // Fallback to text if WhatsApp buttons not available
+          await notifyCustomer(`🎉 Order #${order.code} delivered! Thank you for choosing us.`);
+        }
+        // If provider has a Google review URL, send it separately
+        if (provider.googleReviewUrl) {
+          await sendWhatsAppText(order.tenantId, order.customer.phone, `📝 If you have a moment, please also leave a review on Google:\n${provider.googleReviewUrl}`);
+        }
+      } else {
+        await notifyCustomer(`🎉 Order #${order.code} delivered! Thank you for choosing us.`);
+      }
     } else if (newStatus === "cancelled") {
       await notifyCustomer(`❌ Order #${order.code} has been cancelled. Reason: ${reason || "—"}. Type "menu" to start a new order.`);
     } else if (newStatus === "escalated") {

@@ -38,10 +38,18 @@ interface Job {
   addressLat: number | null;
   addressLng: number | null;
   customer: { name: string | null; phone: string; language: string };
-  service: { icon: string; key: string; labels: string } | null;
+  service: { id: string; icon: string; key: string; labels: string; defaultDeliveryCharge?: number | null; defaultServiceCharge?: number | null } | null;
   city: { name: string };
   acceptedBy: { name: string; phone: string; zone: string } | null;
   quoteAmount: number | null;
+  // charges
+  deliveryCharge: number | null;
+  serviceCharge: number | null;
+  addonsCharge: number | null;
+  itemsTotal: number | null;
+  totalAmount: number | null;
+  chargesConfirmed: boolean;
+  // payments
   paymentAmount: number | null;
   paymentMethod: string | null;
   paymentStatus: string | null;
@@ -63,7 +71,7 @@ export function ProviderApp() {
   const [pastJobs, setPastJobs] = useState<Job[]>([]);
   const [customRequests, setCustomRequests] = useState<Job[]>([]);
   const [incomingJob, setIncomingJob] = useState<Job | null>(null);
-  const [view, setLocalView] = useState<"home" | "job" | "custom" | "new" | "history" | "onboard">("home");
+  const [view, setLocalView] = useState<"home" | "job" | "custom" | "new" | "history" | "onboard" | "settings">("home");
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   // Login form state
@@ -292,6 +300,7 @@ export function ProviderApp() {
         provider={provider}
         onBack={() => { setLocalView("home"); setSelectedJob(null); }}
         onUpdate={(s) => updateJobStatus(selectedJob, s)}
+        refresh={refresh}
       />
     );
   }
@@ -309,6 +318,10 @@ export function ProviderApp() {
 
   if (view === "history") {
     return <HistoryScreen jobs={pastJobs} onBack={() => setLocalView("home")} />;
+  }
+
+  if (view === "settings") {
+    return <ProviderSettings provider={provider} onBack={() => setLocalView("home")} />;
   }
 
   if (view === "custom") {
@@ -387,10 +400,11 @@ export function ProviderApp() {
         </div>
 
         {/* Quick actions */}
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           <QuickAction icon={Plus} label="New job" onClick={() => setLocalView("new")} />
           <QuickAction icon={Bell} label="Requests" badge={customRequests.length} onClick={() => setLocalView("custom")} />
           <QuickAction icon={History} label="History" onClick={() => setLocalView("history")} />
+          <QuickAction icon={Settings} label="Settings" onClick={() => setLocalView("settings")} />
         </div>
 
         {/* Active jobs */}
@@ -593,7 +607,7 @@ function IncomingCallScreen({ job, onAccept, onReject }: { job: Job; onAccept: (
   );
 }
 
-function JobDetail({ job, onBack, onUpdate, provider }: { job: Job; onBack: () => void; onUpdate: (s: "picked" | "delivered") => void; provider: ProviderInfo | null }) {
+function JobDetail({ job, onBack, onUpdate, provider, refresh }: { job: Job; onBack: () => void; onUpdate: (s: "picked" | "delivered") => void; provider: ProviderInfo | null; refresh?: () => void }) {
   const items = safeParse<OrderItem[]>(job.items, []);
   const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
   const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "Order";
@@ -755,6 +769,13 @@ function JobDetail({ job, onBack, onUpdate, provider }: { job: Job; onBack: () =
           </div>
         )}
 
+        {/* Charges section (before payment) */}
+        <ChargesSection
+          job={localJob}
+          provider={provider}
+          onChargesSet={(updated) => { setLocalJob({ ...localJob, ...updated }); }}
+        />
+
         {/* Payment section */}
         <PaymentSection
           job={localJob}
@@ -875,6 +896,307 @@ function JobDetail({ job, onBack, onUpdate, provider }: { job: Job; onBack: () =
 // ─────────────────────────────────────────────────────────────
 // Payment section — shows payment status + action buttons
 // ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// Charges section — provider sets delivery/service charges, customer confirms
+// ─────────────────────────────────────────────────────────────
+
+function ChargesSection({ job, provider, onChargesSet }: { job: Job; provider: ProviderInfo | null; onChargesSet: (updated: Partial<Job>) => void }) {
+  const [modalOpen, setModalOpen] = useState(false);
+  const [deliveryCharge, setDeliveryCharge] = useState("");
+  const [serviceCharge, setServiceCharge] = useState("");
+  const [addonsCharge, setAddonsCharge] = useState("");
+  const [itemsTotal, setItemsTotal] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const isOrder = job.kind === "order";
+  const isBook = job.kind === "book";
+
+  // Pre-fill with service defaults when modal opens
+  useEffect(() => {
+    if (modalOpen) {
+      if (isOrder) {
+        setDeliveryCharge(job.deliveryCharge ? String(job.deliveryCharge / 100) : (job.service?.defaultDeliveryCharge ? String(job.service.defaultDeliveryCharge / 100) : ""));
+        setItemsTotal(job.itemsTotal ? String(job.itemsTotal / 100) : "");
+      }
+      if (isBook) {
+        setServiceCharge(job.serviceCharge ? String(job.serviceCharge / 100) : (job.service?.defaultServiceCharge ? String(job.service.defaultServiceCharge / 100) : ""));
+        setAddonsCharge(job.addonsCharge ? String(job.addonsCharge / 100) : "");
+      }
+    }
+  }, [modalOpen]);
+
+  const totalRupees = job.totalAmount ? (job.totalAmount / 100) : 0;
+
+  async function sendCharges() {
+    if (!provider) return;
+    setLoading(true);
+    try {
+      const body: Record<string, unknown> = { providerId: provider.id, tenantSlug: provider.tenantSlug };
+      if (isOrder) {
+        body.deliveryCharge = deliveryCharge || 0;
+        body.itemsTotal = itemsTotal || 0;
+      }
+      if (isBook) {
+        body.serviceCharge = serviceCharge || 0;
+        body.addonsCharge = addonsCharge || 0;
+      }
+      const res = await fetch(`/api/orders/${job.id}/charges`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success("📋 Charges sent to customer — waiting for agreement");
+        setModalOpen(false);
+        // Update local job with the new charges
+        if (data.charges) {
+          onChargesSet({
+            deliveryCharge: data.charges.deliveryCharge,
+            serviceCharge: data.charges.serviceCharge,
+            addonsCharge: data.charges.addonsCharge,
+            itemsTotal: data.charges.itemsTotal,
+            totalAmount: data.charges.totalAmount,
+            chargesConfirmed: data.charges.chargesConfirmed,
+          });
+        }
+      } else {
+        toast.error(data.error || "Failed to set charges");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // No charges set yet
+  if (!job.totalAmount || job.totalAmount === 0) {
+    return (
+      <div className="p-4 rounded-xl border border-dashed border-border bg-card/50">
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Charges</p>
+        <p className="text-sm text-muted-foreground mb-3">No charges set yet</p>
+        <button
+          onClick={() => setModalOpen(true)}
+          className="w-full bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-medium py-2.5 rounded-xl text-sm flex items-center justify-center gap-2"
+        >
+          💰 Set charges
+        </button>
+
+        {modalOpen && (
+          <ChargesModal
+            isOrder={isOrder}
+            isBook={isBook}
+            deliveryCharge={deliveryCharge}
+            setDeliveryCharge={setDeliveryCharge}
+            serviceCharge={serviceCharge}
+            setServiceCharge={setServiceCharge}
+            addonsCharge={addonsCharge}
+            setAddonsCharge={setAddonsCharge}
+            itemsTotal={itemsTotal}
+            setItemsTotal={setItemsTotal}
+            loading={loading}
+            onSend={sendCharges}
+            onClose={() => setModalOpen(false)}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Charges set, waiting for customer agreement
+  if (!job.chargesConfirmed) {
+    return (
+      <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] uppercase tracking-wider text-amber-300">Charges (waiting for customer)</p>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 animate-live-dot">Pending</span>
+        </div>
+        <ChargesBreakdown job={job} />
+        <button
+          onClick={() => setModalOpen(true)}
+          className="w-full mt-3 text-xs py-2 rounded-lg border border-border hover:border-emerald-500/30"
+        >
+          ✏️ Edit charges
+        </button>
+
+        {modalOpen && (
+          <ChargesModal
+            isOrder={isOrder}
+            isBook={isBook}
+            deliveryCharge={deliveryCharge}
+            setDeliveryCharge={setDeliveryCharge}
+            serviceCharge={serviceCharge}
+            setServiceCharge={setServiceCharge}
+            addonsCharge={addonsCharge}
+            setAddonsCharge={setAddonsCharge}
+            itemsTotal={itemsTotal}
+            setItemsTotal={setItemsTotal}
+            loading={loading}
+            onSend={sendCharges}
+            onClose={() => setModalOpen(false)}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Charges confirmed by customer
+  return (
+    <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-[11px] uppercase tracking-wider text-emerald-300">Charges</p>
+        <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center gap-1">
+          <Check className="w-3 h-3" /> Agreed
+        </span>
+      </div>
+      <ChargesBreakdown job={job} />
+    </div>
+  );
+}
+
+function ChargesBreakdown({ job }: { job: Job }) {
+  const totalRupees = (job.totalAmount || 0) / 100;
+  return (
+    <div>
+      {job.kind === "order" && (
+        <>
+          {job.itemsTotal && job.itemsTotal > 0 && (
+            <div className="flex justify-between text-xs py-0.5">
+              <span className="text-muted-foreground">🛍️ Items</span>
+              <span className="tnum">₹{(job.itemsTotal / 100).toFixed(0)}</span>
+            </div>
+          )}
+          {job.deliveryCharge && job.deliveryCharge > 0 && (
+            <div className="flex justify-between text-xs py-0.5">
+              <span className="text-muted-foreground">🚚 Delivery</span>
+              <span className="tnum">₹{(job.deliveryCharge / 100).toFixed(0)}</span>
+            </div>
+          )}
+        </>
+      )}
+      {job.kind === "book" && (
+        <>
+          {job.serviceCharge && job.serviceCharge > 0 && (
+            <div className="flex justify-between text-xs py-0.5">
+              <span className="text-muted-foreground">🔧 Service</span>
+              <span className="tnum">₹{(job.serviceCharge / 100).toFixed(0)}</span>
+            </div>
+          )}
+          {job.addonsCharge && job.addonsCharge > 0 && (
+            <div className="flex justify-between text-xs py-0.5">
+              <span className="text-muted-foreground">➕ Add-ons</span>
+              <span className="tnum">₹{(job.addonsCharge / 100).toFixed(0)}</span>
+            </div>
+          )}
+        </>
+      )}
+      <div className="flex justify-between text-sm font-semibold pt-2 mt-1 border-t border-border/40">
+        <span>Total</span>
+        <span className="tnum">₹{totalRupees.toFixed(0)}</span>
+      </div>
+    </div>
+  );
+}
+
+function ChargesModal({
+  isOrder, isBook,
+  deliveryCharge, setDeliveryCharge,
+  serviceCharge, setServiceCharge,
+  addonsCharge, setAddonsCharge,
+  itemsTotal, setItemsTotal,
+  loading, onSend, onClose,
+}: {
+  isOrder: boolean; isBook: boolean;
+  deliveryCharge: string; setDeliveryCharge: (v: string) => void;
+  serviceCharge: string; setServiceCharge: (v: string) => void;
+  addonsCharge: string; setAddonsCharge: (v: string) => void;
+  itemsTotal: string; setItemsTotal: (v: string) => void;
+  loading: boolean; onSend: () => void; onClose: () => void;
+}) {
+  // Compute live total
+  const total = (isOrder ? (parseFloat(deliveryCharge || "0") + parseFloat(itemsTotal || "0")) : 0)
+              + (isBook ? (parseFloat(serviceCharge || "0") + parseFloat(addonsCharge || "0")) : 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-30 flex items-end sm:items-center justify-center" onClick={onClose}>
+      <div className="bg-card w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-semibold mb-1">Set charges</h3>
+        <p className="text-xs text-muted-foreground mb-4">Customer will see the breakdown and must agree before payment.</p>
+
+        <div className="space-y-3">
+          {isOrder && (
+            <>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Items total (₹)</label>
+                <input
+                  value={itemsTotal}
+                  onChange={(e) => setItemsTotal(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm tnum outline-none focus:border-emerald-500/40"
+                  autoFocus
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">Estimated cost of items (customer pays actual at delivery)</p>
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Delivery charge (₹)</label>
+                <input
+                  value={deliveryCharge}
+                  onChange={(e) => setDeliveryCharge(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm tnum outline-none focus:border-emerald-500/40"
+                />
+              </div>
+            </>
+          )}
+          {isBook && (
+            <>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Service charge (₹)</label>
+                <input
+                  value={serviceCharge}
+                  onChange={(e) => setServiceCharge(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm tnum outline-none focus:border-emerald-500/40"
+                  autoFocus
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">Base charge for the service (visit + labor)</p>
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Add-ons cost (₹)</label>
+                <input
+                  value={addonsCharge}
+                  onChange={(e) => setAddonsCharge(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm tnum outline-none focus:border-emerald-500/40"
+                />
+                <p className="text-[10px] text-muted-foreground mt-1">Spare parts, materials, etc.</p>
+              </div>
+            </>
+          )}
+
+          {/* Live total */}
+          <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex justify-between items-center">
+            <span className="text-xs text-emerald-300">Total customer pays</span>
+            <span className="text-lg font-semibold tnum text-emerald-300">₹{total.toFixed(0)}</span>
+          </div>
+
+          <button
+            onClick={onSend}
+            disabled={loading}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+          >
+            {loading ? "Sending…" : "📋 Send charges to customer"}
+          </button>
+          <button onClick={onClose} className="w-full text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function PaymentSection({ job, onRequest, onConfirm }: { job: Job; onRequest: () => void; onConfirm: () => void }) {
   const paymentAmountRupees = job.paymentAmount ? (job.paymentAmount / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : null;
@@ -1144,6 +1466,197 @@ function CustomRequestsScreen({ jobs, provider, onBack, onSent }: { jobs: Job[];
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Provider Settings — UPI IDs + Google review URL + feedback toggle
+// ─────────────────────────────────────────────────────────────
+
+function ProviderSettings({ provider, onBack }: { provider: ProviderInfo; onBack: () => void }) {
+  const [upiIds, setUpiIds] = useState<Array<{ id: string; vpa: string; label: string; isDefault: boolean }>>([]);
+  const [googleReviewUrl, setGoogleReviewUrl] = useState("");
+  const [feedbackEnabled, setFeedbackEnabled] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [newVpa, setNewVpa] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+
+  useEffect(() => {
+    fetch(`/api/providers/${provider.id}/upi-ids`).then((r) => r.json()).then((d) => setUpiIds(d.upiIds || []));
+    fetch(`/api/providers/${provider.id}/feedback`).then((r) => r.json()).then((d) => {
+      setGoogleReviewUrl(d.googleReviewUrl || "");
+      setFeedbackEnabled(d.feedbackEnabled ?? true);
+    });
+  }, [provider.id]);
+
+  async function addUpi() {
+    if (!newVpa || !/^[a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+$/.test(newVpa)) {
+      toast.error("Invalid UPI ID format (e.g. name@bank)");
+      return;
+    }
+    const newUpis = [...upiIds, {
+      id: Math.random().toString(36).slice(2),
+      vpa: newVpa,
+      label: newLabel || newVpa.split("@")[0],
+      isDefault: upiIds.length === 0, // first one is default
+    }];
+    await saveUpis(newUpis);
+    setNewVpa("");
+    setNewLabel("");
+  }
+
+  async function removeUpi(id: string) {
+    const filtered = upiIds.filter((u) => u.id !== id);
+    // If we removed the default, make the first one default
+    if (!filtered.find((u) => u.isDefault) && filtered.length > 0) {
+      filtered[0].isDefault = true;
+    }
+    await saveUpis(filtered);
+  }
+
+  async function setDefault(id: string) {
+    const updated = upiIds.map((u) => ({ ...u, isDefault: u.id === id }));
+    await saveUpis(updated);
+  }
+
+  async function saveUpis(newUpis: Array<{ id: string; vpa: string; label: string; isDefault: boolean }>) {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/providers/${provider.id}/upi-ids`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upiIds: newUpis }),
+      });
+      if (res.ok) {
+        setUpiIds(newUpis);
+        toast.success("UPI IDs updated");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function saveFeedback() {
+    setLoading(true);
+    try {
+      await fetch(`/api/providers/${provider.id}/feedback`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ googleReviewUrl, feedbackEnabled }),
+      });
+      toast.success("Feedback settings saved");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-sm font-medium">Settings</h2>
+        </div>
+      </header>
+
+      <div className="px-4 py-4 space-y-5 max-w-md mx-auto">
+        {/* UPI IDs */}
+        <div className="p-4 rounded-xl border border-border bg-card">
+          <p className="text-sm font-medium mb-1">UPI IDs</p>
+          <p className="text-xs text-muted-foreground mb-3">Add multiple UPI IDs. The default one is used for payment links.</p>
+
+          {upiIds.length > 0 && (
+            <div className="space-y-1.5 mb-3">
+              {upiIds.map((upi) => (
+                <div key={upi.id} className={cn(
+                  "p-2.5 rounded-lg border flex items-center gap-2",
+                  upi.isDefault ? "border-emerald-500/30 bg-emerald-500/5" : "border-border"
+                )}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-mono truncate">{upi.vpa}</p>
+                    <p className="text-[10px] text-muted-foreground">{upi.label}</p>
+                  </div>
+                  {upi.isDefault ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">Default</span>
+                  ) : (
+                    <button onClick={() => setDefault(upi.id)} className="text-[10px] px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:text-foreground">
+                      Set default
+                    </button>
+                  )}
+                  <button onClick={() => removeUpi(upi.id)} className="text-rose-400 hover:text-rose-300">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add new UPI */}
+          <div className="space-y-2 pt-2 border-t border-border/40">
+            <input
+              value={newVpa}
+              onChange={(e) => setNewVpa(e.target.value)}
+              placeholder="yourname@okhdfcbank"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-emerald-500/40"
+            />
+            <input
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              placeholder="Label (e.g. Personal, Business)"
+              className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/40"
+            />
+            <button
+              onClick={addUpi}
+              disabled={!newVpa || loading}
+              className="w-full bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 text-xs font-medium py-2 rounded-lg"
+            >
+              + Add UPI ID
+            </button>
+          </div>
+        </div>
+
+        {/* Google review URL */}
+        <div className="p-4 rounded-xl border border-border bg-card">
+          <p className="text-sm font-medium mb-1">Google Business review</p>
+          <p className="text-xs text-muted-foreground mb-3">After delivery, customers get a link to review you on Google. Get this from your Google Business profile.</p>
+          <input
+            value={googleReviewUrl}
+            onChange={(e) => setGoogleReviewUrl(e.target.value)}
+            placeholder="https://g.page/r/CXXXX/review"
+            className="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-emerald-500/40"
+          />
+          <p className="text-[10px] text-muted-foreground mt-1">
+            Tip: Go to Google Business Profile → Ask for reviews → copy the link.
+          </p>
+        </div>
+
+        {/* Feedback toggle */}
+        <div className="p-4 rounded-xl border border-border bg-card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Ask customers for feedback</p>
+              <p className="text-xs text-muted-foreground">After delivery, ask for a 1-5★ rating on WhatsApp</p>
+            </div>
+            <button
+              onClick={() => setFeedbackEnabled(!feedbackEnabled)}
+              className={cn("relative w-10 h-6 rounded-full transition-colors", feedbackEnabled ? "bg-emerald-500" : "bg-zinc-700")}
+            >
+              <span className={cn("absolute top-1 w-4 h-4 rounded-full bg-white transition-transform", feedbackEnabled ? "translate-x-5" : "translate-x-1")} />
+            </button>
+          </div>
+        </div>
+
+        <button
+          onClick={saveFeedback}
+          disabled={loading}
+          className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+        >
+          {loading ? "Saving…" : "Save feedback settings"}
+        </button>
+      </div>
     </div>
   );
 }

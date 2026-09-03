@@ -176,6 +176,63 @@ export async function POST(req: NextRequest) {
   const lang = (customer.language as "en" | "hi") || "en";
   const replies: BotReply[] = [];
 
+  // ── Handle charges agree/cancel buttons (sent by provider via /charges) ──
+  if (button && button.startsWith("charges_agree_")) {
+    const orderId = button.slice("charges_agree_".length);
+    try {
+      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agreed: true, tenantSlug }),
+      });
+      replies.push({ kind: "text", text: "✅ Charges agreed. The provider will send a payment link shortly." });
+    } catch {
+      replies.push({ kind: "text", text: "Something went wrong. Please try again." });
+    }
+    return NextResponse.json({ replies, session: { state: session.state } });
+  }
+  if (button && button.startsWith("charges_cancel_")) {
+    const orderId = button.slice("charges_cancel_".length);
+    try {
+      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agreed: false, tenantSlug }),
+      });
+      replies.push({ kind: "text", text: "❌ Order cancelled. Type *menu* to start a new order." });
+    } catch {
+      replies.push({ kind: "text", text: "Something went wrong." });
+    }
+    return NextResponse.json({ replies, session: { state: session.state } });
+  }
+
+  // ── Handle rating buttons (rate_5_<orderId>, rate_4_, rate_3_) ──
+  if (button && button.startsWith("rate_")) {
+    const match = button.match(/^rate_(\d+)_(.+)$/);
+    if (match) {
+      const rating = parseInt(match[1], 10);
+      const orderId = match[2];
+      try {
+        const res = await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/review`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rating, tenantSlug }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+          replies.push({ kind: "text", text: `🙏 Thank you for your ${rating}★ rating!${data.googleReviewUrl ? "\n\nWe've also sent you a link to review us on Google — it really helps!" : ""}` });
+        } else if (data.error === "review_already_submitted") {
+          replies.push({ kind: "text", text: "You've already rated this order. Thank you! 🙏" });
+        } else {
+          replies.push({ kind: "text", text: "Thanks for your feedback! 🙏" });
+        }
+      } catch {
+        replies.push({ kind: "text", text: "Thanks for your feedback! 🙏" });
+      }
+      return NextResponse.json({ replies, session: { state: session.state } });
+    }
+  }
+
   // ── Handle "cancel" / "menu" anywhere ────────────────────
   const text = (message || "").trim().toLowerCase();
   if (text === "cancel" || text === "❌ cancel" || text === "cancel order") {

@@ -86,6 +86,8 @@ interface Service {
   isActive: boolean;
   labels: string;
   questions: string;
+  defaultDeliveryCharge?: number | null;
+  defaultServiceCharge?: number | null;
 }
 
 interface CityT { id: string; name: string; state: string | null; isActive: boolean }
@@ -1646,19 +1648,26 @@ function EditServiceModal({ service, onClose, onSaved }: { service: Service; onC
   const [enQ, setEnQ] = useState(questions.en || "");
   const [icon, setIcon] = useState(service.icon);
   const [kind, setKind] = useState(service.kind);
+  const [deliveryCharge, setDeliveryCharge] = useState(
+    service.defaultDeliveryCharge ? String(service.defaultDeliveryCharge / 100) : ""
+  );
+  const [serviceCharge, setServiceCharge] = useState(
+    service.defaultServiceCharge ? String(service.defaultServiceCharge / 100) : ""
+  );
   const [loading, setLoading] = useState(false);
 
   async function handleSave() {
     setLoading(true);
-    await fetch("/api/services", {
+    await fetch(`/api/services/${service.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: service.id,
         icon,
         kind,
         labels: { en: enLabel, hi: hiLabel },
         questions: { en: enQ, hi: "" },
+        defaultDeliveryCharge: deliveryCharge || 0,
+        defaultServiceCharge: serviceCharge || 0,
       }),
     });
     toast.success("Saved");
@@ -1687,6 +1696,38 @@ function EditServiceModal({ service, onClose, onSaved }: { service: Service; onC
         <Field label="Label (English)"><input value={enLabel} onChange={(e) => setEnLabel(e.target.value)} className={inputCls} /></Field>
         <Field label="Label (Hindi)"><input value={hiLabel} onChange={(e) => setHiLabel(e.target.value)} className={inputCls} /></Field>
         <Field label="Question (English)"><textarea value={enQ} onChange={(e) => setEnQ(e.target.value)} rows={2} className={inputCls} /></Field>
+
+        {/* Default charges */}
+        <div className="p-3 rounded-lg bg-background border border-border space-y-2">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Default charges</p>
+          <p className="text-[10px] text-muted-foreground">Provider can override these per order at accept time.</p>
+          {kind === "order" && (
+            <Field label="Default delivery charge (₹)">
+              <input
+                value={deliveryCharge}
+                onChange={(e) => setDeliveryCharge(e.target.value)}
+                inputMode="decimal"
+                placeholder="0"
+                className={cn(inputCls, "tnum")}
+              />
+            </Field>
+          )}
+          {kind === "book" && (
+            <Field label="Default service charge (₹)">
+              <input
+                value={serviceCharge}
+                onChange={(e) => setServiceCharge(e.target.value)}
+                inputMode="decimal"
+                placeholder="0"
+                className={cn(inputCls, "tnum")}
+              />
+            </Field>
+          )}
+          {(kind === "custom" || kind === "team") && (
+            <p className="text-[10px] text-muted-foreground">No default charges for {kind} services — provider sends a quote.</p>
+          )}
+        </div>
+
         <button onClick={handleSave} disabled={loading} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-2.5 rounded-xl text-sm">
           {loading ? "Saving…" : "Save changes"}
         </button>
@@ -2482,33 +2523,32 @@ function AddAiProviderModal({ slug, onClose, onAdded }: { slug: string; onClose:
           )}
         </Field>
 
-        {/* Model picker */}
-        <Field label="Model">
-          <select
+        {/* Model name — simple text input */}
+        <Field label="Model name">
+          <input
             value={modelName}
             onChange={(e) => setModelName(e.target.value)}
-            className={inputCls}
-          >
-            {preset.models.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-            {presetId === "custom" && (
-              <option value="custom">Type custom model name</option>
-            )}
-          </select>
-          {presetId === "custom" && (
-            <input
-              value={modelName}
-              onChange={(e) => setModelName(e.target.value)}
-              placeholder="model name"
-              className={cn(inputCls, "font-mono text-xs mt-2")}
-            />
-          )}
-          {selectedModel && (
-            <div className="flex gap-1 mt-2">
-              {selectedModel.capabilities.chat && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">💬 Chat</span>}
-              {selectedModel.capabilities.image && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">📸 Image</span>}
-              {selectedModel.capabilities.audio && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">🎙️ Audio</span>}
+            placeholder={preset.models[0]?.id || "e.g. gpt-4o-mini"}
+            className={cn(inputCls, "font-mono text-xs")}
+          />
+          {preset.models.length > 0 && (
+            <div className="mt-2">
+              <p className="text-[10px] text-muted-foreground mb-1">Common models for {preset.name}:</p>
+              <div className="flex flex-wrap gap-1">
+                {preset.models.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setModelName(m.id)}
+                    className={cn(
+                      "text-[10px] px-1.5 py-0.5 rounded border",
+                      modelName === m.id ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" : "bg-card border-border text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {m.id}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">Enter the exact model name from the API docs. Tap a suggestion to autofill.</p>
             </div>
           )}
         </Field>
