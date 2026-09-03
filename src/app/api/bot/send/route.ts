@@ -501,7 +501,7 @@ export async function POST(req: NextRequest) {
               break;
             }
             const merged = mergeItems(items, newItems);
-            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged), voiceTranscript: transcribedText } });
+            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged) } });
             const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
             replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
               { id: "grocery_done", label: "✅ Done" },

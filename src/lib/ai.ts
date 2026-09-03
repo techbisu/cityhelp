@@ -45,7 +45,7 @@ export async function runAiTask<T = unknown>(
 ): Promise<AiTaskResult<T>> {
   const route = await db.aiTaskRoute.findUnique({
     where: { tenantId_task: { tenantId, task } },
-    include: { provider: true, fallbackProvider: true },
+    include: { provider: true },
   });
 
   // No route or no provider configured → graceful skip
@@ -70,12 +70,17 @@ export async function runAiTask<T = unknown>(
     return { ...result, providerLabel: route.provider.label, modelName: route.modelName };
   }
 
-  // Try fallback provider if configured
-  if (route.fallbackProviderId && route.fallbackProvider && route.fallbackModel) {
-    const fallbackResult = await callProvider<T>(route.fallbackProvider, route.fallbackModel, task, input);
-    if (fallbackResult.ok) {
-      await logUsage(tenantId, task, route.fallbackProvider.label, route.fallbackModel, fallbackResult);
-      return { ...fallbackResult, providerLabel: route.fallbackProvider.label, modelName: route.fallbackModel };
+  // Try fallback provider if configured — separate lookup since relation isn't in schema
+  if (route.fallbackProviderId && route.fallbackModel) {
+    const fallbackProvider = await db.aiProvider.findUnique({
+      where: { id: route.fallbackProviderId },
+    });
+    if (fallbackProvider) {
+      const fallbackResult = await callProvider<T>(fallbackProvider, route.fallbackModel, task, input);
+      if (fallbackResult.ok) {
+        await logUsage(tenantId, task, fallbackProvider.label, route.fallbackModel, fallbackResult);
+        return { ...fallbackResult, providerLabel: fallbackProvider.label, modelName: route.fallbackModel };
+      }
     }
   }
 

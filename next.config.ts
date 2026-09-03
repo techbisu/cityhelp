@@ -7,10 +7,6 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: false,
   },
-  // ESLint also fails the build
-  eslint: {
-    ignoreDuringBuilds: false,
-  },
   // Security headers (supplement to proxy.ts)
   async headers() {
     return [

@@ -23,6 +23,7 @@ import {
   sendWhatsAppText,
   sendWhatsAppButtons,
   sendWhatsAppList,
+  downloadWhatsAppMedia,
 } from "@/lib/whatsapp";
 import { rateLimitOr429, getClientIp } from "@/lib/rate-limit";
 import { downloadAndStoreMedia } from "@/lib/storage";

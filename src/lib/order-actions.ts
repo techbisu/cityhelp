@@ -138,7 +138,7 @@ export async function submitReview(
  * Transitions the order to "accepted" with the quoting provider.
  */
 export async function acceptQuote(orderId: string, tenantId: string): Promise<{ ok: boolean; error?: string }> {
-  const order = await db.order.findUnique({ where: { id: orderId } });
+  const order = await db.order.findUnique({ where: { id: orderId }, include: { customer: true } });
   if (!order || order.tenantId !== tenantId) return { ok: false, error: "not_found" };
   if (order.status !== "quoted") return { ok: false, error: "not_quoted" };
   if (!order.acceptedById) return { ok: false, error: "no_provider" };
@@ -162,7 +162,7 @@ export async function acceptQuote(orderId: string, tenantId: string): Promise<{ 
   });
 
   // Notify customer
-  await sendWhatsAppText(tenantId, order.customerId, `✅ Quote accepted! Your order is now confirmed. The provider will reach out shortly.`);
+  await sendWhatsAppText(tenantId, order.customer.phone, `✅ Quote accepted! Your order is now confirmed. The provider will reach out shortly.`);
 
   return { ok: true };
 }

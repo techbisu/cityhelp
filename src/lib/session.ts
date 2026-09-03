@@ -11,7 +11,13 @@
  */
 import crypto from "crypto";
 
-const SESSION_SECRET = process.env.CITYHELP_SESSION_SECRET || "cityhelp-dev-session-secret-change-in-prod";
+const SESSION_SECRET_RAW = process.env.CITYHELP_SESSION_SECRET || "cityhelp-dev-session-secret-change-in-prod";
+
+if (process.env.NODE_ENV === "production" && !process.env.CITYHELP_SESSION_SECRET) {
+  throw new Error("CITYHELP_SESSION_SECRET must be set in production (min 32 chars). Run: openssl rand -base64 32");
+}
+
+const SESSION_SECRET = SESSION_SECRET_RAW;
 const COOKIE_STAFF = "ch_staff";
 const COOKIE_PROVIDER = "ch_provider";
 const COOKIE_SUPER = "ch_super";

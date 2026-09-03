@@ -24,14 +24,14 @@ export async function GET(req: NextRequest) {
     where: { status: { in: ["active", "trial"] } },
     include: {
       staff: { where: { role: "owner" } },
-      notificationSetting: true,
+      notifications: true,
       plan: true,
     },
   });
 
   let sent = 0;
   for (const tenant of tenants) {
-    if (!tenant.notificationSetting?.dailyDigest) continue;
+    if (!tenant.notifications?.dailyDigest) continue;
     if (!tenant.plan.featureEmail) continue;
     const owner = tenant.staff[0];
     if (!owner?.email) continue;

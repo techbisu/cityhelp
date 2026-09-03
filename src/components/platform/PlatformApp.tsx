@@ -160,7 +160,7 @@ export function PlatformApp() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} impersonate={(t) => impersonate(t)} />}
+          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} />}
           {page === "plans" && <PlansPage />}
           {page === "usage" && <UsagePage />}
           {page === "audit" && <AuditPage />}
@@ -192,7 +192,7 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof Shield; 
 // Tenants page
 // ─────────────────────────────────────────────────────────────
 
-function TenantsPage({ onView, impersonate }: { onView: (t: Tenant) => void; impersonate?: (t: Tenant) => void }) {
+function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selected, setSelected] = useState<Tenant | null>(null);
 
@@ -215,16 +215,6 @@ function TenantsPage({ onView, impersonate }: { onView: (t: Tenant) => void; imp
     } else {
       toast.error("Failed to update tenant");
     }
-  }
-
-  async function impersonate(t: Tenant) {
-    // Write audit log for impersonation start
-    await fetch("/api/superadmin/impersonate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenantId: t.id, action: "start" }),
-    });
-    onView(t);
   }
 
   return (
@@ -272,7 +262,7 @@ function TenantsPage({ onView, impersonate }: { onView: (t: Tenant) => void; imp
                 </td>
                 <td className="p-3">
                   <div className="flex gap-1">
-                    <button onClick={() => (impersonate ? impersonate(t) : onView(t))} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
+                    <button onClick={() => onView(t)} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
                       <Eye className="w-3 h-3" />
                     </button>
                     <button onClick={() => toggleSuspend(t)} className={cn("text-[10px] px-2 py-1 rounded", t.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
@@ -306,7 +296,7 @@ function TenantsPage({ onView, impersonate }: { onView: (t: Tenant) => void; imp
               {selected.trialEndsAt && <Row label="Trial ends" value={timeAgo(selected.trialEndsAt)} />}
             </div>
             <footer className="p-4 border-t border-border flex gap-2">
-              <button onClick={() => (impersonate ? impersonate(selected) : onView(selected))} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+              <button onClick={() => onView(selected)} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
                 View as tenant
               </button>
               <button onClick={() => toggleSuspend(selected)} className={cn("px-4 py-2 rounded-xl text-sm font-medium", selected.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>

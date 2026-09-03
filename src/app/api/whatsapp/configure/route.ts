@@ -25,6 +25,7 @@ export async function GET(req: NextRequest) {
   const tenant = await db.tenant.findUnique({
     where: { slug: tenantSlug },
     select: {
+      id: true,
       waPhoneNumberId: true,
       waBusinessName: true,
       waVerified: true,
