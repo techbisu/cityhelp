@@ -1,5 +1,9 @@
 // CityHelp — Multi-tenant SaaS for WhatsApp-based local delivery/service businesses
-// Prisma schema (SQLite for dev; production target: Supabase Postgres)
+// Prisma schema (Neon Postgres for production, SQLite for local dev)
+//
+// Env vars:
+//   DATABASE_URL=file:./db/custom.db              → SQLite (local dev)
+//   DATABASE_URL=postgresql://...neon.tech/...     → Neon Postgres (production)
 
 generator client {
   provider = "prisma-client-js"
@@ -9,6 +13,11 @@ datasource db {
   provider = "sqlite"
   url      = env("DATABASE_URL")
 }
+
+// NOTE: When deploying to Neon Postgres, change provider to "postgresql" above.
+// Or use the prisma multi-provider setup:
+//   DATABASE_URL=postgresql://...  →  change provider to "postgresql"
+//   DATABASE_URL=file:./db/custom.db  →  keep provider as "sqlite"
 
 // ─────────────────────────────────────────────────────────────
 // PLATFORM LEVEL

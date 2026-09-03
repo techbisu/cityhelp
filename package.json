@@ -5,12 +5,18 @@
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
+    "vercel-build": "bun run scripts/vercel-build.ts && next build",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:deploy": "prisma migrate deploy",
+    "db:reset": "prisma migrate reset",
+    "seed": "bun run scripts/seed.ts",
+    "seed:prod": "bun run scripts/seed-idempotent.ts",
+    "migrate": "bash scripts/migrate.sh",
+    "migrate:seed": "bash scripts/migrate.sh --seed"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -51,6 +57,7 @@
     "@tanstack/react-query": "^5.82.0",
     "@tanstack/react-table": "^8.21.3",
     "class-variance-authority": "^0.7.1",
+    "cloudinary": "^2.11.0",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",

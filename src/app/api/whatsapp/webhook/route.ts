@@ -25,6 +25,7 @@ import {
   sendWhatsAppList,
 } from "@/lib/whatsapp";
 import { rateLimitOr429, getClientIp } from "@/lib/rate-limit";
+import { downloadAndStoreMedia } from "@/lib/storage";
 
 // ── GET: per-tenant verification handshake ──────────────
 export async function GET(req: NextRequest) {
@@ -174,9 +175,30 @@ export async function POST(req: NextRequest) {
             },
           };
         } else if (msgType === "audio" || msgType === "voice") {
-          botPayload = { mediaType: "voice", mediaId: msg.audio?.id || msg.voice?.id, message: "[voice note]" };
+          const mediaId = msg.audio?.id || msg.voice?.id;
+          const mimeType = msg.audio?.mime_type || msg.voice?.mime_type || "audio/mp4";
+          let mediaUrl = "";
+          // Download from WhatsApp and store in Cloudinary/R2
+          if (mediaId) {
+            const mediaData = await downloadWhatsAppMedia(tenant.id, mediaId);
+            if (mediaData) {
+              const stored = await downloadAndStoreMedia(tenant.id, mediaData.buffer, mediaId, mediaData.mimeType || mimeType);
+              if (stored) mediaUrl = stored.url;
+            }
+          }
+          botPayload = { mediaType: "voice", mediaId, mediaUrl, message: "[voice note]" };
         } else if (msgType === "image") {
-          botPayload = { mediaType: "image", mediaId: msg.image?.id, message: "[photo]" };
+          const mediaId = msg.image?.id;
+          const mimeType = msg.image?.mime_type || "image/jpeg";
+          let mediaUrl = "";
+          if (mediaId) {
+            const mediaData = await downloadWhatsAppMedia(tenant.id, mediaId);
+            if (mediaData) {
+              const stored = await downloadAndStoreMedia(tenant.id, mediaData.buffer, mediaId, mediaData.mimeType || mimeType);
+              if (stored) mediaUrl = stored.url;
+            }
+          }
+          botPayload = { mediaType: "image", mediaId, mediaUrl, message: "[photo]" };
         } else {
           botPayload = { message: `[${msgType}]` };
         }
