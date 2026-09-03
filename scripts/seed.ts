@@ -149,6 +149,9 @@ async function main() {
   const c2 = await db.customer.create({
     data: { tenantId: t1.id, phone: "+919833300002", name: "Sneha", language: "hi", totalOrders: 6, lifetimeValue: 32000 },
   });
+  const c3 = await db.customer.create({
+    data: { tenantId: t2.id, phone: "+919844400001", name: "Ravi", language: "en", totalOrders: 3, lifetimeValue: 18000 },
+  });
 
   // ── Sample Orders ──
   const now = new Date();
@@ -195,7 +198,7 @@ async function main() {
   });
   await db.order.create({
     data: {
-      tenantId: t2.id, cityId: t2Mumbai.id, customerId: c1.id, serviceId: svcRide.id, code: "2001", status: "accepted", kind: "book",
+      tenantId: t2.id, cityId: t2Mumbai.id, customerId: c3.id, serviceId: svcRide.id, code: "2001", status: "accepted", kind: "book",
       description: "Pickup Andheri station, drop Bandra Linking Road", timing: "Today 4-6pm",
       addressText: "Andheri Station West, Mumbai", addressArea: "Andheri West",
       acceptedById: p4.id, acceptedAt: new Date(now.getTime() - 1000*60*4), quoteAmount: 28000, source: "bot",

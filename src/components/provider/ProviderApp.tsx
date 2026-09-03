@@ -953,7 +953,41 @@ function ProviderOnboarding({ provider, onDone }: { provider: ProviderInfo; onDo
       </div>
       <div className="p-4 space-y-2">
         {step === 0 && (
-          <button onClick={() => { toast.success("🔔 Notification permission requested"); setStep(1); }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+          <button onClick={async () => {
+            // Request notification permission + subscribe to push
+            try {
+              const perm = await Notification.requestPermission();
+              if (perm === "granted") {
+                toast.success("🔔 Notifications enabled");
+                // Try to subscribe to web push
+                try {
+                  const vapidRes = await fetch("/api/push/vapid");
+                  const vapidData = await vapidRes.json();
+                  if (vapidData.configured && "serviceWorker" in navigator) {
+                    const reg = await navigator.serviceWorker.ready;
+                    const subscription = await reg.pushManager.subscribe({
+                      userVisibleOnly: true,
+                      applicationServerKey: vapidData.publicKey,
+                    });
+                    await fetch("/api/providers/subscribe", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ providerId: provider.id, subscription }),
+                    });
+                    toast.success("Push notifications subscribed");
+                  }
+                } catch (e) {
+                  // Push optional — don't block onboarding
+                  console.log("Push subscription failed:", e);
+                }
+              } else {
+                toast.info("Notifications blocked — you can still receive jobs in-app");
+              }
+            } catch {
+              toast.info("Notifications not available on this device");
+            }
+            setStep(1);
+          }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
             Allow notifications
           </button>
         )}
@@ -963,7 +997,23 @@ function ProviderOnboarding({ provider, onDone }: { provider: ProviderInfo; onDo
           </button>
         )}
         {step === 2 && (
-          <button onClick={() => { toast.success("🔊 Test alert sent — did it ring loudly?", { duration: 4000 }); setStep(3); }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+          <button onClick={() => {
+            // Send a real local notification as a test
+            try {
+              if ("Notification" in window && Notification.permission === "granted") {
+                new Notification("CityHelp test alert", {
+                  body: "🔔 If you can hear this, you're ready to receive jobs!",
+                  tag: "test",
+                });
+                toast.success("🔊 Test notification sent — check your notifications");
+              } else {
+                toast.info("Notifications not granted — you'll still see jobs in the app");
+              }
+            } catch {
+              toast.info("Could not send test notification");
+            }
+            setStep(3);
+          }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
             Send test alert
           </button>
         )}

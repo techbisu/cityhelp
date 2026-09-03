@@ -160,7 +160,7 @@ export function PlatformApp() {
         </header>
 
         <main className="flex-1 overflow-y-auto">
-          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} />}
+          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} impersonate={(t) => impersonate(t)} />}
           {page === "plans" && <PlansPage />}
           {page === "usage" && <UsagePage />}
           {page === "audit" && <AuditPage />}
@@ -192,7 +192,7 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof Shield; 
 // Tenants page
 // ─────────────────────────────────────────────────────────────
 
-function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
+function TenantsPage({ onView, impersonate }: { onView: (t: Tenant) => void; impersonate?: (t: Tenant) => void }) {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [selected, setSelected] = useState<Tenant | null>(null);
 
@@ -203,14 +203,28 @@ function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
   async function toggleSuspend(t: Tenant) {
     const action = t.status === "suspended" ? "restore" : "suspend";
     if (!confirm(`${action} ${t.name}?`)) return;
-    // For demo: just update locally
-    setTenants(tenants.map((x) => x.id === t.id ? { ...x, status: action === "suspend" ? "suspended" : "active" } : x));
-    toast.success(`${t.name} ${action === "suspend" ? "suspended" : "restored"}`);
-    await fetch("/api/audit", {
+    // Actually update the tenant in the DB (not just local state)
+    const res = await fetch(`/api/tenants/${t.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: action === "suspend" ? "suspended" : "active" }),
+    });
+    if (res.ok) {
+      setTenants(tenants.map((x) => x.id === t.id ? { ...x, status: action === "suspend" ? "suspended" : "active" } : x));
+      toast.success(`${t.name} ${action === "suspend" ? "suspended" : "restored"}`);
+    } else {
+      toast.error("Failed to update tenant");
+    }
+  }
+
+  async function impersonate(t: Tenant) {
+    // Write audit log for impersonation start
+    await fetch("/api/superadmin/impersonate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actor: "superadmin", action, entity: "tenant", entityId: t.id, detail: `${action} ${t.name}` }),
+      body: JSON.stringify({ tenantId: t.id, action: "start" }),
     });
+    onView(t);
   }
 
   return (
@@ -258,7 +272,7 @@ function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
                 </td>
                 <td className="p-3">
                   <div className="flex gap-1">
-                    <button onClick={() => onView(t)} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
+                    <button onClick={() => (impersonate ? impersonate(t) : onView(t))} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
                       <Eye className="w-3 h-3" />
                     </button>
                     <button onClick={() => toggleSuspend(t)} className={cn("text-[10px] px-2 py-1 rounded", t.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
@@ -292,7 +306,7 @@ function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
               {selected.trialEndsAt && <Row label="Trial ends" value={timeAgo(selected.trialEndsAt)} />}
             </div>
             <footer className="p-4 border-t border-border flex gap-2">
-              <button onClick={() => onView(selected)} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+              <button onClick={() => (impersonate ? impersonate(selected) : onView(selected))} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
                 View as tenant
               </button>
               <button onClick={() => toggleSuspend(selected)} className={cn("px-4 py-2 rounded-xl text-sm font-medium", selected.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
@@ -514,12 +528,22 @@ function AuditPage() {
 
 function HealthPage() {
   const [health, setHealth] = useState<{ status: string; services: Record<string, string> } | null>(null);
+  const [wsHealth, setWsHealth] = useState<{ ok: boolean } | null>(null);
+  const [configStatus, setConfigStatus] = useState<{
+    whatsapp: boolean; sentry: boolean; email: boolean; push: boolean; billing: boolean;
+  }>({ whatsapp: false, sentry: false, email: false, push: false, billing: false });
 
   useEffect(() => {
     fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d));
     const id = setInterval(() => fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d)), 5000);
+    // Check WS health
+    fetch("http://localhost:3003/health").then((r) => r.json()).then((d) => setWsHealth(d)).catch(() => setWsHealth({ ok: false }));
+    // Check config status
+    fetch("/api/health/config").then((r) => r.json()).then((d) => setConfigStatus(d)).catch(() => {});
     return () => clearInterval(id);
   }, []);
+
+  const { whatsapp: whatsappConfigured, sentry: sentryConfigured, email: emailConfigured, push: pushConfigured, billing: billingConfigured } = configStatus;
 
   return (
     <div className="p-4 space-y-4 max-w-2xl">
@@ -537,8 +561,12 @@ function HealthPage() {
         </div>
         <div className="space-y-2 text-xs">
           <HealthRow label="Database" status={health?.services.database} />
-          <HealthRow label="WhatsApp webhook" status="ok" />
-          <HealthRow label="Error tracking (Sentry)" status="ok" />
+          <HealthRow label="WhatsApp webhook" status={whatsappConfigured ? "ok" : "not_configured"} />
+          <HealthRow label="Error tracking (Sentry)" status={sentryConfigured ? "ok" : "not_configured"} />
+          <HealthRow label="Email (Resend)" status={emailConfigured ? "ok" : "not_configured"} />
+          <HealthRow label="Web push (VAPID)" status={pushConfigured ? "ok" : "not_configured"} />
+          <HealthRow label="Billing (Razorpay)" status={billingConfigured ? "ok" : "not_configured"} />
+          <HealthRow label="Realtime (WebSocket)" status={wsHealth?.ok ? "ok" : "down"} />
           <HealthRow label="Daily backups" status="ok" />
         </div>
       </div>
@@ -547,24 +575,24 @@ function HealthPage() {
         <p className="text-sm font-medium mb-2">Security checklist</p>
         <div className="space-y-1.5 text-xs">
           {[
-            "Webhook signature verification",
-            "Duplicate webhook dedup",
-            "Hard tenant isolation (DB-level)",
-            "Keys encrypted at rest (AES-256-GCM)",
-            "Rate-limited login & bot messages",
-            "PIN lockout (5 tries → 15 min)",
-            "2FA for super admin & owners",
-            "Security headers (CSP, no clickjacking)",
-            "Audit log of every sensitive action",
-            "Idempotent mutations (accept/assign)",
-            "PII export & delete tools",
-            "Daily backups + restore",
-            "CI fails on vulnerable deps",
-            "No secrets in client bundles",
+            { label: "Webhook signature verification (HMAC SHA-256)", ok: true },
+            { label: "Duplicate webhook dedup (waMessageId unique)", ok: true },
+            { label: "Hard tenant isolation (DB-level + API guards)", ok: true },
+            { label: "Keys encrypted at rest (AES-256-GCM)", ok: true },
+            { label: "Server-side input validation", ok: true },
+            { label: "Rate-limited login & bot messages", ok: true },
+            { label: "PIN lockout (5 tries → 15 min)", ok: true },
+            { label: "2FA for super admin (TOTP)", ok: true },
+            { label: "Security headers (CSP, HSTS, X-Frame-Options)", ok: true },
+            { label: "Audit log of every sensitive action", ok: true },
+            { label: "Idempotent mutations (accept/assign via tx)", ok: true },
+            { label: "PII export & delete tools (GDPR)", ok: true },
+            { label: "Payment webhooks signature-verified & idempotent", ok: billingConfigured },
+            { label: "No secrets in client bundles", ok: true },
           ].map((s) => (
-            <div key={s} className="flex items-center gap-2">
-              <Check className="w-3 h-3 text-emerald-400" />
-              <span>{s}</span>
+            <div key={s.label} className="flex items-center gap-2">
+              {s.ok ? <Check className="w-3 h-3 text-emerald-400" /> : <AlertCircle className="w-3 h-3 text-amber-400" />}
+              <span className={s.ok ? "" : "text-amber-300"}>{s.label}</span>
             </div>
           ))}
         </div>

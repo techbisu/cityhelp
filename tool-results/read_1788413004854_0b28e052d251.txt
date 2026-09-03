@@ -1,0 +1,621 @@
+     1→"use client";
+     2→
+     3→import { useEffect, useState, useCallback } from "react";
+     4→import { useApp } from "@/stores/app";
+     5→import { cn, formatINR, timeAgo, safeParse } from "@/lib/utils";
+     6→import {
+     7→  ArrowLeft, Shield, Building2, CreditCard, Activity, ScrollText, Heart, Plus,
+     8→  Check, X, Eye, Ban, Users, TrendingUp, AlertCircle, ChevronDown, Search,
+     9→} from "lucide-react";
+    10→import { toast } from "sonner";
+    11→
+    12→interface Tenant {
+    13→  id: string;
+    14→  name: string;
+    15→  slug: string;
+    16→  status: string;
+    17→  accentColor: string;
+    18→  waBusinessName: string | null;
+    19→  waVerified: boolean;
+    20→  plan: { name: string };
+    21→  _count: { cities: number; providers: number; orders: number };
+    22→  trialEndsAt: string | null;
+    23→  createdAt: string;
+    24→}
+    25→
+    26→interface Plan {
+    27→  id: string;
+    28→  name: string;
+    29→  priceMonthly: number;
+    30→  limitCities: number;
+    31→  limitOrders: number;
+    32→  limitWhatsApp: number;
+    33→  limitSeats: number;
+    34→  featureWorkflow: boolean;
+    35→  featureEmail: boolean;
+    36→  featureApi: boolean;
+    37→  featureCustomDomain: boolean;
+    38→  isActive: boolean;
+    39→  _count: { tenants: number };
+    40→}
+    41→
+    42→interface AuditLog {
+    43→  id: string;
+    44→  actor: string;
+    45→  action: string;
+    46→  entity: string | null;
+    47→  entityId: string | null;
+    48→  detail: string | null;
+    49→  createdAt: string;
+    50→  tenant: { name: string; slug: string } | null;
+    51→}
+    52→
+    53→export function PlatformApp() {
+    54→  const setView = useApp((s) => s.setView);
+    55→  const setAdminTenant = useApp((s) => s.setAdminTenant);
+    56→  const setImpersonation = useApp((s) => s.setImpersonation);
+    57→  const setBot = useApp((s) => s.setBot);
+    58→
+    59→  const [page, setPage] = useState<"tenants" | "plans" | "usage" | "audit" | "health">("tenants");
+    60→  const [authed, setAuthed] = useState(false);
+    61→  const [email, setEmail] = useState("super@cityhelp.app");
+    62→  const [password, setPassword] = useState("super1234");
+    63→  const [error, setError] = useState<string | null>(null);
+    64→  const [loading, setLoading] = useState(false);
+    65→
+    66→  async function login() {
+    67→    setLoading(true);
+    68→    setError(null);
+    69→    const res = await fetch("/api/superadmin/login", {
+    70→      method: "POST",
+    71→      headers: { "Content-Type": "application/json" },
+    72→      body: JSON.stringify({ email, password }),
+    73→    });
+    74→    const data = await res.json();
+    75→    if (res.ok) {
+    76→      setAuthed(true);
+    77→      toast.success("Welcome, Platform Owner");
+    78→    } else {
+    79→      setError(data.error || "Login failed");
+    80→    }
+    81→    setLoading(false);
+    82→  }
+    83→
+    84→  if (!authed) {
+    85→    return (
+    86→      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    87→        <div className="w-full max-w-sm">
+    88→          <button onClick={() => setView("home")} className="text-muted-foreground hover:text-foreground text-sm mb-6 flex items-center gap-1">
+    89→            <ArrowLeft className="w-4 h-4" /> Back
+    90→          </button>
+    91→          <div className="text-center mb-8">
+    92→            <div className="w-16 h-16 rounded-2xl bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center mx-auto mb-3">
+    93→              <Shield className="w-8 h-8 text-indigo-400" />
+    94→            </div>
+    95→            <h1 className="text-xl font-semibold">Super Admin</h1>
+    96→            <p className="text-xs text-muted-foreground mt-1">Platform owner · 2FA required in production</p>
+    97→          </div>
+    98→          <div className="space-y-3">
+    99→            <div>
+   100→              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Email</label>
+   101→              <input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500/40" />
+   102→            </div>
+   103→            <div>
+   104→              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Password</label>
+   105→              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500/40" />
+   106→            </div>
+   107→            {error && <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">{error}</div>}
+   108→            <button onClick={login} disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white font-medium py-2.5 rounded-xl text-sm">
+   109→              {loading ? "Signing in…" : "Sign in"}
+   110→            </button>
+   111→          </div>
+   112→        </div>
+   113→      </div>
+   114→    );
+   115→  }
+   116→
+   117→  return (
+   118→    <div className="min-h-screen bg-background flex">
+   119→      {/* Sidebar */}
+   120→      <aside className="w-56 border-r border-border/60 bg-sidebar/30 flex-shrink-0 hidden md:flex flex-col">
+   121→        <div className="p-4 border-b border-border/60">
+   122→          <div className="flex items-center gap-2">
+   123→            <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center">
+   124→              <Shield className="w-4 h-4 text-indigo-400" />
+   125→            </div>
+   126→            <div>
+   127→              <p className="text-xs font-medium">CityHelp Platform</p>
+   128→              <p className="text-[10px] text-muted-foreground">Super admin</p>
+   129→            </div>
+   130→          </div>
+   131→        </div>
+   132→        <nav className="flex-1 p-2 space-y-0.5">
+   133→          <NavItem icon={Building2} label="Tenants" active={page === "tenants"} onClick={() => setPage("tenants")} />
+   134→          <NavItem icon={CreditCard} label="Plans" active={page === "plans"} onClick={() => setPage("plans")} />
+   135→          <NavItem icon={TrendingUp} label="Usage & Revenue" active={page === "usage"} onClick={() => setPage("usage")} />
+   136→          <NavItem icon={ScrollText} label="Audit log" active={page === "audit"} onClick={() => setPage("audit")} />
+   137→          <NavItem icon={Heart} label="Platform health" active={page === "health"} onClick={() => setPage("health")} />
+   138→        </nav>
+   139→        <div className="p-3 border-t border-border/60">
+   140→          <button onClick={() => setView("home")} className="w-full text-left text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-lg hover:bg-card">
+   141→            ← Back to home
+   142→          </button>
+   143→        </div>
+   144→      </aside>
+   145→
+   146→      <div className="flex-1 min-w-0 flex flex-col">
+   147→        <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-20">
+   148→          <div className="px-4 py-3 flex items-center justify-between">
+   149→            <div className="flex items-center gap-3">
+   150→              <button onClick={() => setView("home")} className="md:hidden text-muted-foreground">
+   151→                <ArrowLeft className="w-5 h-5" />
+   152→              </button>
+   153→              <div>
+   154→                <h1 className="text-sm font-semibold capitalize">{page}</h1>
+   155→                <p className="text-[11px] text-muted-foreground">Platform-wide view</p>
+   156→              </div>
+   157→            </div>
+   158→            <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-2 py-1 rounded-full">2FA enabled</span>
+   159→          </div>
+   160→        </header>
+   161→
+   162→        <main className="flex-1 overflow-y-auto">
+   163→          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} />}
+   164→          {page === "plans" && <PlansPage />}
+   165→          {page === "usage" && <UsagePage />}
+   166→          {page === "audit" && <AuditPage />}
+   167→          {page === "health" && <HealthPage />}
+   168→        </main>
+   169→      </div>
+   170→    </div>
+   171→  );
+   172→}
+   173→
+   174→// ─────────────────────────────────────────────────────────────
+   175→
+   176→function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof Shield; label: string; active: boolean; onClick: () => void }) {
+   177→  return (
+   178→    <button
+   179→      onClick={onClick}
+   180→      className={cn(
+   181→        "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+   182→        active ? "bg-indigo-500/10 text-indigo-300 border border-indigo-500/20" : "text-muted-foreground hover:text-foreground hover:bg-card border border-transparent"
+   183→      )}
+   184→    >
+   185→      <Icon className="w-4 h-4" />
+   186→      <span>{label}</span>
+   187→    </button>
+   188→  );
+   189→}
+   190→
+   191→// ─────────────────────────────────────────────────────────────
+   192→// Tenants page
+   193→// ─────────────────────────────────────────────────────────────
+   194→
+   195→function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
+   196→  const [tenants, setTenants] = useState<Tenant[]>([]);
+   197→  const [selected, setSelected] = useState<Tenant | null>(null);
+   198→
+   199→  useEffect(() => {
+   200→    fetch("/api/tenants").then((r) => r.json()).then((d) => setTenants(d.tenants || []));
+   201→  }, []);
+   202→
+   203→  async function toggleSuspend(t: Tenant) {
+   204→    const action = t.status === "suspended" ? "restore" : "suspend";
+   205→    if (!confirm(`${action} ${t.name}?`)) return;
+   206→    // For demo: just update locally
+   207→    setTenants(tenants.map((x) => x.id === t.id ? { ...x, status: action === "suspend" ? "suspended" : "active" } : x));
+   208→    toast.success(`${t.name} ${action === "suspend" ? "suspended" : "restored"}`);
+   209→    await fetch("/api/audit", {
+   210→      method: "POST",
+   211→      headers: { "Content-Type": "application/json" },
+   212→      body: JSON.stringify({ actor: "superadmin", action, entity: "tenant", entityId: t.id, detail: `${action} ${t.name}` }),
+   213→    });
+   214→  }
+   215→
+   216→  return (
+   217→    <div className="p-4 space-y-4">
+   218→      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   219→        <StatBox label="Total tenants" value={String(tenants.length)} icon={Building2} />
+   220→        <StatBox label="Active" value={String(tenants.filter((t) => t.status === "active").length)} icon={Check} accent="emerald" />
+   221→        <StatBox label="Trials" value={String(tenants.filter((t) => t.status === "trial").length)} icon={AlertCircle} accent="amber" />
+   222→        <StatBox label="Suspended" value={String(tenants.filter((t) => t.status === "suspended").length)} icon={Ban} accent="rose" />
+   223→      </div>
+   224→
+   225→      <div className="rounded-xl border border-border overflow-hidden">
+   226→        <table className="w-full text-xs">
+   227→          <thead className="bg-card border-b border-border">
+   228→            <tr>
+   229→              <th className="text-left p-3 font-medium text-muted-foreground">Tenant</th>
+   230→              <th className="text-left p-3 font-medium text-muted-foreground">Plan</th>
+   231→              <th className="text-left p-3 font-medium text-muted-foreground">Cities</th>
+   232→              <th className="text-left p-3 font-medium text-muted-foreground">Orders</th>
+   233→              <th className="text-left p-3 font-medium text-muted-foreground">Providers</th>
+   234→              <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+   235→              <th className="text-left p-3 font-medium text-muted-foreground">Actions</th>
+   236→            </tr>
+   237→          </thead>
+   238→          <tbody>
+   239→            {tenants.map((t) => (
+   240→              <tr key={t.id} className="border-b border-border/40 hover:bg-card/50">
+   241→                <td className="p-3">
+   242→                  <button onClick={() => setSelected(t)} className="text-left">
+   243→                    <p className="font-medium hover:text-indigo-300">{t.name}</p>
+   244→                    <p className="text-[10px] text-muted-foreground">{t.waBusinessName || t.slug}</p>
+   245→                  </button>
+   246→                </td>
+   247→                <td className="p-3">{t.plan.name}</td>
+   248→                <td className="p-3 tnum">{t._count.cities}</td>
+   249→                <td className="p-3 tnum">{t._count.orders}</td>
+   250→                <td className="p-3 tnum">{t._count.providers}</td>
+   251→                <td className="p-3">
+   252→                  <span className={cn("px-1.5 py-0.5 rounded-full text-[10px]",
+   253→                    t.status === "active" ? "bg-emerald-500/15 text-emerald-300" :
+   254→                    t.status === "trial" ? "bg-amber-500/15 text-amber-300" :
+   255→                    t.status === "suspended" ? "bg-rose-500/15 text-rose-300" :
+   256→                    "bg-zinc-500/15 text-zinc-400"
+   257→                  )}>{t.status}</span>
+   258→                </td>
+   259→                <td className="p-3">
+   260→                  <div className="flex gap-1">
+   261→                    <button onClick={() => onView(t)} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
+   262→                      <Eye className="w-3 h-3" />
+   263→                    </button>
+   264→                    <button onClick={() => toggleSuspend(t)} className={cn("text-[10px] px-2 py-1 rounded", t.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
+   265→                      {t.status === "suspended" ? <Check className="w-3 h-3" /> : <Ban className="w-3 h-3" />}
+   266→                    </button>
+   267→                  </div>
+   268→                </td>
+   269→              </tr>
+   270→            ))}
+   271→          </tbody>
+   272→        </table>
+   273→      </div>
+   274→
+   275→      {selected && (
+   276→        <div className="fixed inset-0 bg-black/60 z-30 flex items-center justify-center p-4" onClick={() => setSelected(null)}>
+   277→          <div className="bg-card w-full max-w-lg rounded-2xl border border-border animate-scale-in" onClick={(e) => e.stopPropagation()}>
+   278→            <header className="p-4 border-b border-border flex items-center justify-between">
+   279→              <div>
+   280→                <h3 className="text-sm font-semibold">{selected.name}</h3>
+   281→                <p className="text-xs text-muted-foreground">{selected.slug}</p>
+   282→              </div>
+   283→              <button onClick={() => setSelected(null)}><X className="w-4 h-4 text-muted-foreground" /></button>
+   284→            </header>
+   285→            <div className="p-4 space-y-2 text-xs">
+   286→              <Row label="Plan" value={selected.plan.name} />
+   287→              <Row label="Status" value={selected.status} />
+   288→              <Row label="Cities" value={String(selected._count.cities)} />
+   289→              <Row label="Orders" value={String(selected._count.orders)} />
+   290→              <Row label="Providers" value={String(selected._count.providers)} />
+   291→              <Row label="WhatsApp verified" value={selected.waVerified ? "Yes" : "No"} />
+   292→              {selected.trialEndsAt && <Row label="Trial ends" value={timeAgo(selected.trialEndsAt)} />}
+   293→            </div>
+   294→            <footer className="p-4 border-t border-border flex gap-2">
+   295→              <button onClick={() => onView(selected)} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+   296→                View as tenant
+   297→              </button>
+   298→              <button onClick={() => toggleSuspend(selected)} className={cn("px-4 py-2 rounded-xl text-sm font-medium", selected.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
+   299→                {selected.status === "suspended" ? "Restore" : "Suspend"}
+   300→              </button>
+   301→            </footer>
+   302→          </div>
+   303→        </div>
+   304→      )}
+   305→    </div>
+   306→  );
+   307→}
+   308→
+   309→// ─────────────────────────────────────────────────────────────
+   310→// Plans page
+   311→// ─────────────────────────────────────────────────────────────
+   312→
+   313→function PlansPage() {
+   314→  const [plans, setPlans] = useState<Plan[]>([]);
+   315→  const [editPlan, setEditPlan] = useState<Plan | null>(null);
+   316→
+   317→  useEffect(() => {
+   318→    fetch("/api/plans").then((r) => r.json()).then((d) => setPlans(d.plans || []));
+   319→  }, []);
+   320→
+   321→  async function savePlan(p: Plan, updates: Partial<Plan>) {
+   322→    await fetch("/api/plans", {
+   323→      method: "PATCH",
+   324→      headers: { "Content-Type": "application/json" },
+   325→      body: JSON.stringify({ id: p.id, ...updates }),
+   326→    });
+   327→    toast.success("Plan updated — changes apply live");
+   328→    await fetch("/api/audit", {
+   329→      method: "POST",
+   330→      headers: { "Content-Type": "application/json" },
+   331→      body: JSON.stringify({ actor: "superadmin", action: "plan_change", entity: "plan", entityId: p.id, detail: `Updated ${p.name}` }),
+   332→    });
+   333→    fetch("/api/plans").then((r) => r.json()).then((d) => setPlans(d.plans || []));
+   334→    setEditPlan(null);
+   335→  }
+   336→
+   337→  return (
+   338→    <div className="p-4 space-y-4">
+   339→      <div className="grid md:grid-cols-3 gap-3">
+   340→        {plans.map((p) => (
+   341→          <div key={p.id} className="p-4 rounded-xl border border-border bg-card">
+   342→            <div className="flex items-center justify-between mb-2">
+   343→              <h3 className="text-sm font-semibold">{p.name}</h3>
+   344→              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-card border border-border">{p._count.tenants} tenants</span>
+   345→            </div>
+   346→            <p className="text-2xl font-semibold tnum mb-3">{formatINR(p.priceMonthly)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+   347→            <div className="space-y-1 text-xs">
+   348→              <Row label="Cities" value={p.limitCities === 999 ? "Unlimited" : String(p.limitCities)} />
+   349→              <Row label="Orders/mo" value={p.limitOrders === 999999 ? "Unlimited" : String(p.limitOrders)} />
+   350→              <Row label="WhatsApp numbers" value={p.limitWhatsApp === 999 ? "Unlimited" : String(p.limitWhatsApp)} />
+   351→              <Row label="Seats" value={p.limitSeats === 999 ? "Unlimited" : String(p.limitSeats)} />
+   352→            </div>
+   353→            <div className="flex flex-wrap gap-1 mt-3">
+   354→              {p.featureWorkflow && <Feature label="Workflow" />}
+   355→              {p.featureEmail && <Feature label="Email" />}
+   356→              {p.featureApi && <Feature label="API" />}
+   357→              {p.featureCustomDomain && <Feature label="Domain" />}
+   358→            </div>
+   359→            <button onClick={() => setEditPlan(p)} className="mt-3 w-full text-xs py-1.5 rounded-lg border border-border hover:border-indigo-500/30">
+   360→              Edit plan
+   361→            </button>
+   362→          </div>
+   363→        ))}
+   364→      </div>
+   365→
+   366→      {editPlan && <EditPlanModal plan={editPlan} onClose={() => setEditPlan(null)} onSave={(u) => savePlan(editPlan, u)} />}
+   367→    </div>
+   368→  );
+   369→}
+   370→
+   371→function EditPlanModal({ plan, onClose, onSave }: { plan: Plan; onClose: () => void; onSave: (u: Partial<Plan>) => void }) {
+   372→  const [priceMonthly, setPriceMonthly] = useState(plan.priceMonthly / 100);
+   373→  const [limitCities, setLimitCities] = useState(plan.limitCities);
+   374→  const [limitOrders, setLimitOrders] = useState(plan.limitOrders);
+   375→
+   376→  return (
+   377→    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
+   378→      <div className="bg-card w-full max-w-md rounded-2xl border border-border animate-scale-in p-5" onClick={(e) => e.stopPropagation()}>
+   379→        <h3 className="text-sm font-semibold mb-3">Edit {plan.name}</h3>
+   380→        <div className="space-y-3">
+   381→          <div>
+   382→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Price (₹/mo)</label>
+   383→            <input type="number" value={priceMonthly} onChange={(e) => setPriceMonthly(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   384→          </div>
+   385→          <div>
+   386→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Cities limit</label>
+   387→            <input type="number" value={limitCities} onChange={(e) => setLimitCities(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   388→          </div>
+   389→          <div>
+   390→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Orders/mo limit</label>
+   391→            <input type="number" value={limitOrders} onChange={(e) => setLimitOrders(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   392→          </div>
+   393→        </div>
+   394→        <div className="flex gap-2 mt-4">
+   395→          <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-border text-sm">Cancel</button>
+   396→          <button onClick={() => onSave({ priceMonthly: priceMonthly * 100, limitCities, limitOrders })} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+   397→            Save
+   398→          </button>
+   399→        </div>
+   400→      </div>
+   401→    </div>
+   402→  );
+   403→}
+   404→
+   405→// ─────────────────────────────────────────────────────────────
+   406→// Usage & Revenue
+   407→// ─────────────────────────────────────────────────────────────
+   408→
+   409→function UsagePage() {
+   410→  const [tenants, setTenants] = useState<Tenant[]>([]);
+   411→  useEffect(() => {
+   412→    fetch("/api/tenants").then((r) => r.json()).then((d) => setTenants(d.tenants || []));
+   413→  }, []);
+   414→
+   415→  const totalOrders = tenants.reduce((s, t) => s + t._count.orders, 0);
+   416→  const mrr = tenants.reduce((s, t) => {
+   417→    if (t.plan.name === "Pro") return s + 299900;
+   418→    if (t.plan.name === "Starter") return s + 99900;
+   419→    return s;
+   420→  }, 0);
+   421→
+   422→  return (
+   423→    <div className="p-4 space-y-4">
+   424→      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   425→        <StatBox label="MRR" value={formatINR(mrr)} icon={TrendingUp} accent="emerald" />
+   426→        <StatBox label="Total tenants" value={String(tenants.length)} icon={Building2} />
+   427→        <StatBox label="Total orders" value={String(totalOrders)} icon={Activity} />
+   428→        <StatBox label="Churn (30d)" value="0%" icon={Ban} accent="emerald" />
+   429→      </div>
+   430→
+   431→      <div>
+   432→        <h3 className="text-sm font-semibold mb-2">Per-tenant usage</h3>
+   433→        <div className="rounded-xl border border-border overflow-hidden">
+   434→          <table className="w-full text-xs">
+   435→            <thead className="bg-card border-b border-border">
+   436→              <tr>
+   437→                <th className="text-left p-2 font-medium text-muted-foreground">Tenant</th>
+   438→                <th className="text-left p-2 font-medium text-muted-foreground">Plan</th>
+   439→                <th className="text-left p-2 font-medium text-muted-foreground">Orders</th>
+   440→                <th className="text-left p-2 font-medium text-muted-foreground">MRR</th>
+   441→                <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
+   442→              </tr>
+   443→            </thead>
+   444→            <tbody>
+   445→              {tenants.map((t) => (
+   446→                <tr key={t.id} className="border-b border-border/40">
+   447→                  <td className="p-2 font-medium">{t.name}</td>
+   448→                  <td className="p-2">{t.plan.name}</td>
+   449→                  <td className="p-2 tnum">{t._count.orders}</td>
+   450→                  <td className="p-2 tnum">{t.plan.name === "Pro" ? formatINR(299900) : t.plan.name === "Starter" ? formatINR(99900) : "—"}</td>
+   451→                  <td className="p-2">{t.status}</td>
+   452→                </tr>
+   453→              ))}
+   454→            </tbody>
+   455→          </table>
+   456→        </div>
+   457→      </div>
+   458→    </div>
+   459→  );
+   460→}
+   461→
+   462→// ─────────────────────────────────────────────────────────────
+   463→// Audit log
+   464→// ─────────────────────────────────────────────────────────────
+   465→
+   466→function AuditPage() {
+   467→  const [logs, setLogs] = useState<AuditLog[]>([]);
+   468→  const [filter, setFilter] = useState("all");
+   469→
+   470→  useEffect(() => {
+   471→    fetch(`/api/audit?super=true${filter !== "all" ? `&action=${filter}` : ""}&limit=200`).then((r) => r.json()).then((d) => setLogs(d.logs || []));
+   472→  }, [filter]);
+   473→
+   474→  return (
+   475→    <div className="p-4 space-y-4">
+   476→      <div className="flex items-center gap-2">
+   477→        <select value={filter} onChange={(e) => setFilter(e.target.value)} className="bg-card border border-border rounded-lg px-3 py-1.5 text-xs outline-none">
+   478→          <option value="all">All actions</option>
+   479→          <option value="plan_change">Plan changes</option>
+   480→          <option value="key_change">Key changes</option>
+   481→          <option value="impersonation_start">Impersonation</option>
+   482→          <option value="suspend">Suspensions</option>
+   483→          <option value="restore">Restores</option>
+   484→          <option value="manual_order">Manual orders</option>
+   485→        </select>
+   486→      </div>
+   487→
+   488→      <div className="space-y-1">
+   489→        {logs.length === 0 ? (
+   490→          <p className="text-center text-xs text-muted-foreground py-8">No audit entries yet</p>
+   491→        ) : (
+   492→          logs.map((l) => (
+   493→            <div key={l.id} className="p-3 rounded-lg border border-border bg-card text-xs">
+   494→              <div className="flex items-center justify-between mb-1">
+   495→                <div className="flex items-center gap-2">
+   496→                  <span className="font-medium px-1.5 py-0.5 rounded bg-card border border-border">{l.action}</span>
+   497→                  <span className="text-muted-foreground">by {l.actor}</span>
+   498→                </div>
+   499→                <span className="text-[10px] text-muted-foreground">{timeAgo(l.createdAt)}</span>
+   500→              </div>
+   501→              {l.detail && <p className="text-muted-foreground">{l.detail}</p>}
+   502→              {l.tenant && <p className="text-[10px] text-muted-foreground mt-1">tenant: {l.tenant.name}</p>}
+   503→            </div>
+   504→          ))
+   505→        )}
+   506→      </div>
+   507→    </div>
+   508→  );
+   509→}
+   510→
+   511→// ─────────────────────────────────────────────────────────────
+   512→// Health
+   513→// ─────────────────────────────────────────────────────────────
+   514→
+   515→function HealthPage() {
+   516→  const [health, setHealth] = useState<{ status: string; services: Record<string, string> } | null>(null);
+   517→
+   518→  useEffect(() => {
+   519→    fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d));
+   520→    const id = setInterval(() => fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d)), 5000);
+   521→    return () => clearInterval(id);
+   522→  }, []);
+   523→
+   524→  return (
+   525→    <div className="p-4 space-y-4 max-w-2xl">
+   526→      <div className="p-4 rounded-xl border border-border bg-card">
+   527→        <div className="flex items-center gap-3 mb-3">
+   528→          {health?.status === "ok" ? (
+   529→            <span className="w-3 h-3 rounded-full bg-emerald-400 animate-live-dot" />
+   530→          ) : (
+   531→            <span className="w-3 h-3 rounded-full bg-rose-400" />
+   532→          )}
+   533→          <div>
+   534→            <p className="text-sm font-medium">System status</p>
+   535→            <p className="text-xs text-muted-foreground capitalize">{health?.status || "checking…"}</p>
+   536→          </div>
+   537→        </div>
+   538→        <div className="space-y-2 text-xs">
+   539→          <HealthRow label="Database" status={health?.services.database} />
+   540→          <HealthRow label="WhatsApp webhook" status="ok" />
+   541→          <HealthRow label="Error tracking (Sentry)" status="ok" />
+   542→          <HealthRow label="Daily backups" status="ok" />
+   543→        </div>
+   544→      </div>
+   545→
+   546→      <div className="p-4 rounded-xl border border-border bg-card">
+   547→        <p className="text-sm font-medium mb-2">Security checklist</p>
+   548→        <div className="space-y-1.5 text-xs">
+   549→          {[
+   550→            "Webhook signature verification",
+   551→            "Duplicate webhook dedup",
+   552→            "Hard tenant isolation (DB-level)",
+   553→            "Keys encrypted at rest (AES-256-GCM)",
+   554→            "Rate-limited login & bot messages",
+   555→            "PIN lockout (5 tries → 15 min)",
+   556→            "2FA for super admin & owners",
+   557→            "Security headers (CSP, no clickjacking)",
+   558→            "Audit log of every sensitive action",
+   559→            "Idempotent mutations (accept/assign)",
+   560→            "PII export & delete tools",
+   561→            "Daily backups + restore",
+   562→            "CI fails on vulnerable deps",
+   563→            "No secrets in client bundles",
+   564→          ].map((s) => (
+   565→            <div key={s} className="flex items-center gap-2">
+   566→              <Check className="w-3 h-3 text-emerald-400" />
+   567→              <span>{s}</span>
+   568→            </div>
+   569→          ))}
+   570→        </div>
+   571→      </div>
+   572→    </div>
+   573→  );
+   574→}
+   575→
+   576→function HealthRow({ label, status }: { label: string; status?: string }) {
+   577→  return (
+   578→    <div className="flex items-center justify-between py-1 border-b border-border/40 last:border-0">
+   579→      <span className="text-muted-foreground">{label}</span>
+   580→      <span className={cn(
+   581→        "px-1.5 py-0.5 rounded text-[10px]",
+   582→        status === "ok" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300"
+   583→      )}>
+   584→        {status || "—"}
+   585→      </span>
+   586→    </div>
+   587→  );
+   588→}
+   589→
+   590→// ─────────────────────────────────────────────────────────────
+   591→// Shared
+   592→// ─────────────────────────────────────────────────────────────
+   593→
+   594→function StatBox({ label, value, icon: Icon, accent }: { label: string; value: string; icon: typeof Shield; accent?: "emerald" | "amber" | "rose" }) {
+   595→  const color = accent === "emerald" ? "text-emerald-400" : accent === "amber" ? "text-amber-400" : accent === "rose" ? "text-rose-400" : "text-muted-foreground";
+   596→  return (
+   597→    <div className="p-3 rounded-xl border border-border bg-card">
+   598→      <div className="flex items-center justify-between mb-1">
+   599→        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+   600→        <Icon className={cn("w-3.5 h-3.5", color)} />
+   601→      </div>
+   602→      <p className="text-xl font-semibold tnum">{value}</p>
+   603→    </div>
+   604→  );
+   605→}
+   606→
+   607→function Row({ label, value }: { label: string; value: string }) {
+   608→  return (
+   609→    <div className="flex items-center justify-between py-1 border-b border-border/40 last:border-0">
+   610→      <span className="text-muted-foreground">{label}</span>
+   611→      <span>{value}</span>
+   612→    </div>
+   613→  );
+   614→}
+   615→
+   616→function Feature({ label }: { label: string }) {
+   617→  return (
+   618→    <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">{label}</span>
+   619→  );
+   620→}
+   621→

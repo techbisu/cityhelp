@@ -1,0 +1,502 @@
+     1→     1→"use client";
+     2→     2→
+     3→     3→import { useEffect, useState, useCallback } from "react";
+     4→     4→import { useApp } from "@/stores/app";
+     5→     5→import { cn, formatINR, timeAgo, safeParse } from "@/lib/utils";
+     6→     6→import {
+     7→     7→  ArrowLeft, Shield, Building2, CreditCard, Activity, ScrollText, Heart, Plus,
+     8→     8→  Check, X, Eye, Ban, Users, TrendingUp, AlertCircle, ChevronDown, Search,
+     9→     9→} from "lucide-react";
+    10→    10→import { toast } from "sonner";
+    11→    11→
+    12→    12→interface Tenant {
+    13→    13→  id: string;
+    14→    14→  name: string;
+    15→    15→  slug: string;
+    16→    16→  status: string;
+    17→    17→  accentColor: string;
+    18→    18→  waBusinessName: string | null;
+    19→    19→  waVerified: boolean;
+    20→    20→  plan: { name: string };
+    21→    21→  _count: { cities: number; providers: number; orders: number };
+    22→    22→  trialEndsAt: string | null;
+    23→    23→  createdAt: string;
+    24→    24→}
+    25→    25→
+    26→    26→interface Plan {
+    27→    27→  id: string;
+    28→    28→  name: string;
+    29→    29→  priceMonthly: number;
+    30→    30→  limitCities: number;
+    31→    31→  limitOrders: number;
+    32→    32→  limitWhatsApp: number;
+    33→    33→  limitSeats: number;
+    34→    34→  featureWorkflow: boolean;
+    35→    35→  featureEmail: boolean;
+    36→    36→  featureApi: boolean;
+    37→    37→  featureCustomDomain: boolean;
+    38→    38→  isActive: boolean;
+    39→    39→  _count: { tenants: number };
+    40→    40→}
+    41→    41→
+    42→    42→interface AuditLog {
+    43→    43→  id: string;
+    44→    44→  actor: string;
+    45→    45→  action: string;
+    46→    46→  entity: string | null;
+    47→    47→  entityId: string | null;
+    48→    48→  detail: string | null;
+    49→    49→  createdAt: string;
+    50→    50→  tenant: { name: string; slug: string } | null;
+    51→    51→}
+    52→    52→
+    53→    53→export function PlatformApp() {
+    54→    54→  const setView = useApp((s) => s.setView);
+    55→    55→  const setAdminTenant = useApp((s) => s.setAdminTenant);
+    56→    56→  const setImpersonation = useApp((s) => s.setImpersonation);
+    57→    57→  const setBot = useApp((s) => s.setBot);
+    58→    58→
+    59→    59→  const [page, setPage] = useState<"tenants" | "plans" | "usage" | "audit" | "health">("tenants");
+    60→    60→  const [authed, setAuthed] = useState(false);
+    61→    61→  const [email, setEmail] = useState("super@cityhelp.app");
+    62→    62→  const [password, setPassword] = useState("super1234");
+    63→    63→  const [error, setError] = useState<string | null>(null);
+    64→    64→  const [loading, setLoading] = useState(false);
+    65→    65→
+    66→    66→  async function login() {
+    67→    67→    setLoading(true);
+    68→    68→    setError(null);
+    69→    69→    const res = await fetch("/api/superadmin/login", {
+    70→    70→      method: "POST",
+    71→    71→      headers: { "Content-Type": "application/json" },
+    72→    72→      body: JSON.stringify({ email, password }),
+    73→    73→    });
+    74→    74→    const data = await res.json();
+    75→    75→    if (res.ok) {
+    76→    76→      setAuthed(true);
+    77→    77→      toast.success("Welcome, Platform Owner");
+    78→    78→    } else {
+    79→    79→      setError(data.error || "Login failed");
+    80→    80→    }
+    81→    81→    setLoading(false);
+    82→    82→  }
+    83→    83→
+    84→    84→  if (!authed) {
+    85→    85→    return (
+    86→    86→      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+    87→    87→        <div className="w-full max-w-sm">
+    88→    88→          <button onClick={() => setView("home")} className="text-muted-foreground hover:text-foreground text-sm mb-6 flex items-center gap-1">
+    89→    89→            <ArrowLeft className="w-4 h-4" /> Back
+    90→    90→          </button>
+    91→    91→          <div className="text-center mb-8">
+    92→    92→            <div className="w-16 h-16 rounded-2xl bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center mx-auto mb-3">
+    93→    93→              <Shield className="w-8 h-8 text-indigo-400" />
+    94→    94→            </div>
+    95→    95→            <h1 className="text-xl font-semibold">Super Admin</h1>
+    96→    96→            <p className="text-xs text-muted-foreground mt-1">Platform owner · 2FA required in production</p>
+    97→    97→          </div>
+    98→    98→          <div className="space-y-3">
+    99→    99→            <div>
+   100→   100→              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Email</label>
+   101→   101→              <input value={email} onChange={(e) => setEmail(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500/40" />
+   102→   102→            </div>
+   103→   103→            <div>
+   104→   104→              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Password</label>
+   105→   105→              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-indigo-500/40" />
+   106→   106→            </div>
+   107→   107→            {error && <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">{error}</div>}
+   108→   108→            <button onClick={login} disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 disabled:opacity-50 text-white font-medium py-2.5 rounded-xl text-sm">
+   109→   109→              {loading ? "Signing in…" : "Sign in"}
+   110→   110→            </button>
+   111→   111→          </div>
+   112→   112→        </div>
+   113→   113→      </div>
+   114→   114→    );
+   115→   115→  }
+   116→   116→
+   117→   117→  return (
+   118→   118→    <div className="min-h-screen bg-background flex">
+   119→   119→      {/* Sidebar */}
+   120→   120→      <aside className="w-56 border-r border-border/60 bg-sidebar/30 flex-shrink-0 hidden md:flex flex-col">
+   121→   121→        <div className="p-4 border-b border-border/60">
+   122→   122→          <div className="flex items-center gap-2">
+   123→   123→            <div className="w-8 h-8 rounded-lg bg-indigo-500/15 border border-indigo-500/20 flex items-center justify-center">
+   124→   124→              <Shield className="w-4 h-4 text-indigo-400" />
+   125→   125→            </div>
+   126→   126→            <div>
+   127→   127→              <p className="text-xs font-medium">CityHelp Platform</p>
+   128→   128→              <p className="text-[10px] text-muted-foreground">Super admin</p>
+   129→   129→            </div>
+   130→   130→          </div>
+   131→   131→        </div>
+   132→   132→        <nav className="flex-1 p-2 space-y-0.5">
+   133→   133→          <NavItem icon={Building2} label="Tenants" active={page === "tenants"} onClick={() => setPage("tenants")} />
+   134→   134→          <NavItem icon={CreditCard} label="Plans" active={page === "plans"} onClick={() => setPage("plans")} />
+   135→   135→          <NavItem icon={TrendingUp} label="Usage & Revenue" active={page === "usage"} onClick={() => setPage("usage")} />
+   136→   136→          <NavItem icon={ScrollText} label="Audit log" active={page === "audit"} onClick={() => setPage("audit")} />
+   137→   137→          <NavItem icon={Heart} label="Platform health" active={page === "health"} onClick={() => setPage("health")} />
+   138→   138→        </nav>
+   139→   139→        <div className="p-3 border-t border-border/60">
+   140→   140→          <button onClick={() => setView("home")} className="w-full text-left text-xs text-muted-foreground hover:text-foreground px-2 py-1.5 rounded-lg hover:bg-card">
+   141→   141→            ← Back to home
+   142→   142→          </button>
+   143→   143→        </div>
+   144→   144→      </aside>
+   145→   145→
+   146→   146→      <div className="flex-1 min-w-0 flex flex-col">
+   147→   147→        <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-20">
+   148→   148→          <div className="px-4 py-3 flex items-center justify-between">
+   149→   149→            <div className="flex items-center gap-3">
+   150→   150→              <button onClick={() => setView("home")} className="md:hidden text-muted-foreground">
+   151→   151→                <ArrowLeft className="w-5 h-5" />
+   152→   152→              </button>
+   153→   153→              <div>
+   154→   154→                <h1 className="text-sm font-semibold capitalize">{page}</h1>
+   155→   155→                <p className="text-[11px] text-muted-foreground">Platform-wide view</p>
+   156→   156→              </div>
+   157→   157→            </div>
+   158→   158→            <span className="text-[10px] text-indigo-300 bg-indigo-500/15 px-2 py-1 rounded-full">2FA enabled</span>
+   159→   159→          </div>
+   160→   160→        </header>
+   161→   161→
+   162→   162→        <main className="flex-1 overflow-y-auto">
+   163→   163→          {page === "tenants" && <TenantsPage onView={(t) => { setBot(t.slug, "+919833300001"); setAdminTenant(t.slug, "super@cityhelp.app"); setImpersonation(t.slug); setView("admin"); }} />}
+   164→   164→          {page === "plans" && <PlansPage />}
+   165→   165→          {page === "usage" && <UsagePage />}
+   166→   166→          {page === "audit" && <AuditPage />}
+   167→   167→          {page === "health" && <HealthPage />}
+   168→   168→        </main>
+   169→   169→      </div>
+   170→   170→    </div>
+   171→   171→  );
+   172→   172→}
+   173→   173→
+   174→   174→// ─────────────────────────────────────────────────────────────
+   175→   175→
+   176→   176→function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof Shield; label: string; active: boolean; onClick: () => void }) {
+   177→   177→  return (
+   178→   178→    <button
+   179→   179→      onClick={onClick}
+   180→   180→      className={cn(
+   181→   181→        "w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors",
+   182→   182→        active ? "bg-indigo-500/10 text-indigo-300 border border-indigo-500/20" : "text-muted-foreground hover:text-foreground hover:bg-card border border-transparent"
+   183→   183→      )}
+   184→   184→    >
+   185→   185→      <Icon className="w-4 h-4" />
+   186→   186→      <span>{label}</span>
+   187→   187→    </button>
+   188→   188→  );
+   189→   189→}
+   190→   190→
+   191→   191→// ─────────────────────────────────────────────────────────────
+   192→   192→// Tenants page
+   193→   193→// ─────────────────────────────────────────────────────────────
+   194→   194→
+   195→   195→function TenantsPage({ onView }: { onView: (t: Tenant) => void }) {
+   196→   196→  const [tenants, setTenants] = useState<Tenant[]>([]);
+   197→   197→  const [selected, setSelected] = useState<Tenant | null>(null);
+   198→   198→
+   199→   199→  useEffect(() => {
+   200→   200→    fetch("/api/tenants").then((r) => r.json()).then((d) => setTenants(d.tenants || []));
+   201→   201→  }, []);
+   202→   202→
+   203→   203→  async function toggleSuspend(t: Tenant) {
+   204→   204→    const action = t.status === "suspended" ? "restore" : "suspend";
+   205→   205→    if (!confirm(`${action} ${t.name}?`)) return;
+   206→   206→    // For demo: just update locally
+   207→   207→    setTenants(tenants.map((x) => x.id === t.id ? { ...x, status: action === "suspend" ? "suspended" : "active" } : x));
+   208→   208→    toast.success(`${t.name} ${action === "suspend" ? "suspended" : "restored"}`);
+   209→   209→    await fetch("/api/audit", {
+   210→   210→      method: "POST",
+   211→   211→      headers: { "Content-Type": "application/json" },
+   212→   212→      body: JSON.stringify({ actor: "superadmin", action, entity: "tenant", entityId: t.id, detail: `${action} ${t.name}` }),
+   213→   213→    });
+   214→   214→  }
+   215→   215→
+   216→   216→  return (
+   217→   217→    <div className="p-4 space-y-4">
+   218→   218→      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   219→   219→        <StatBox label="Total tenants" value={String(tenants.length)} icon={Building2} />
+   220→   220→        <StatBox label="Active" value={String(tenants.filter((t) => t.status === "active").length)} icon={Check} accent="emerald" />
+   221→   221→        <StatBox label="Trials" value={String(tenants.filter((t) => t.status === "trial").length)} icon={AlertCircle} accent="amber" />
+   222→   222→        <StatBox label="Suspended" value={String(tenants.filter((t) => t.status === "suspended").length)} icon={Ban} accent="rose" />
+   223→   223→      </div>
+   224→   224→
+   225→   225→      <div className="rounded-xl border border-border overflow-hidden">
+   226→   226→        <table className="w-full text-xs">
+   227→   227→          <thead className="bg-card border-b border-border">
+   228→   228→            <tr>
+   229→   229→              <th className="text-left p-3 font-medium text-muted-foreground">Tenant</th>
+   230→   230→              <th className="text-left p-3 font-medium text-muted-foreground">Plan</th>
+   231→   231→              <th className="text-left p-3 font-medium text-muted-foreground">Cities</th>
+   232→   232→              <th className="text-left p-3 font-medium text-muted-foreground">Orders</th>
+   233→   233→              <th className="text-left p-3 font-medium text-muted-foreground">Providers</th>
+   234→   234→              <th className="text-left p-3 font-medium text-muted-foreground">Status</th>
+   235→   235→              <th className="text-left p-3 font-medium text-muted-foreground">Actions</th>
+   236→   236→            </tr>
+   237→   237→          </thead>
+   238→   238→          <tbody>
+   239→   239→            {tenants.map((t) => (
+   240→   240→              <tr key={t.id} className="border-b border-border/40 hover:bg-card/50">
+   241→   241→                <td className="p-3">
+   242→   242→                  <button onClick={() => setSelected(t)} className="text-left">
+   243→   243→                    <p className="font-medium hover:text-indigo-300">{t.name}</p>
+   244→   244→                    <p className="text-[10px] text-muted-foreground">{t.waBusinessName || t.slug}</p>
+   245→   245→                  </button>
+   246→   246→                </td>
+   247→   247→                <td className="p-3">{t.plan.name}</td>
+   248→   248→                <td className="p-3 tnum">{t._count.cities}</td>
+   249→   249→                <td className="p-3 tnum">{t._count.orders}</td>
+   250→   250→                <td className="p-3 tnum">{t._count.providers}</td>
+   251→   251→                <td className="p-3">
+   252→   252→                  <span className={cn("px-1.5 py-0.5 rounded-full text-[10px]",
+   253→   253→                    t.status === "active" ? "bg-emerald-500/15 text-emerald-300" :
+   254→   254→                    t.status === "trial" ? "bg-amber-500/15 text-amber-300" :
+   255→   255→                    t.status === "suspended" ? "bg-rose-500/15 text-rose-300" :
+   256→   256→                    "bg-zinc-500/15 text-zinc-400"
+   257→   257→                  )}>{t.status}</span>
+   258→   258→                </td>
+   259→   259→                <td className="p-3">
+   260→   260→                  <div className="flex gap-1">
+   261→   261→                    <button onClick={() => onView(t)} className="text-[10px] px-2 py-1 rounded bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25" title="Impersonate">
+   262→   262→                      <Eye className="w-3 h-3" />
+   263→   263→                    </button>
+   264→   264→                    <button onClick={() => toggleSuspend(t)} className={cn("text-[10px] px-2 py-1 rounded", t.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
+   265→   265→                      {t.status === "suspended" ? <Check className="w-3 h-3" /> : <Ban className="w-3 h-3" />}
+   266→   266→                    </button>
+   267→   267→                  </div>
+   268→   268→                </td>
+   269→   269→              </tr>
+   270→   270→            ))}
+   271→   271→          </tbody>
+   272→   272→        </table>
+   273→   273→      </div>
+   274→   274→
+   275→   275→      {selected && (
+   276→   276→        <div className="fixed inset-0 bg-black/60 z-30 flex items-center justify-center p-4" onClick={() => setSelected(null)}>
+   277→   277→          <div className="bg-card w-full max-w-lg rounded-2xl border border-border animate-scale-in" onClick={(e) => e.stopPropagation()}>
+   278→   278→            <header className="p-4 border-b border-border flex items-center justify-between">
+   279→   279→              <div>
+   280→   280→                <h3 className="text-sm font-semibold">{selected.name}</h3>
+   281→   281→                <p className="text-xs text-muted-foreground">{selected.slug}</p>
+   282→   282→              </div>
+   283→   283→              <button onClick={() => setSelected(null)}><X className="w-4 h-4 text-muted-foreground" /></button>
+   284→   284→            </header>
+   285→   285→            <div className="p-4 space-y-2 text-xs">
+   286→   286→              <Row label="Plan" value={selected.plan.name} />
+   287→   287→              <Row label="Status" value={selected.status} />
+   288→   288→              <Row label="Cities" value={String(selected._count.cities)} />
+   289→   289→              <Row label="Orders" value={String(selected._count.orders)} />
+   290→   290→              <Row label="Providers" value={String(selected._count.providers)} />
+   291→   291→              <Row label="WhatsApp verified" value={selected.waVerified ? "Yes" : "No"} />
+   292→   292→              {selected.trialEndsAt && <Row label="Trial ends" value={timeAgo(selected.trialEndsAt)} />}
+   293→   293→            </div>
+   294→   294→            <footer className="p-4 border-t border-border flex gap-2">
+   295→   295→              <button onClick={() => onView(selected)} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+   296→   296→                View as tenant
+   297→   297→              </button>
+   298→   298→              <button onClick={() => toggleSuspend(selected)} className={cn("px-4 py-2 rounded-xl text-sm font-medium", selected.status === "suspended" ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>
+   299→   299→                {selected.status === "suspended" ? "Restore" : "Suspend"}
+   300→   300→              </button>
+   301→   301→            </footer>
+   302→   302→          </div>
+   303→   303→        </div>
+   304→   304→      )}
+   305→   305→    </div>
+   306→   306→  );
+   307→   307→}
+   308→   308→
+   309→   309→// ─────────────────────────────────────────────────────────────
+   310→   310→// Plans page
+   311→   311→// ─────────────────────────────────────────────────────────────
+   312→   312→
+   313→   313→function PlansPage() {
+   314→   314→  const [plans, setPlans] = useState<Plan[]>([]);
+   315→   315→  const [editPlan, setEditPlan] = useState<Plan | null>(null);
+   316→   316→
+   317→   317→  useEffect(() => {
+   318→   318→    fetch("/api/plans").then((r) => r.json()).then((d) => setPlans(d.plans || []));
+   319→   319→  }, []);
+   320→   320→
+   321→   321→  async function savePlan(p: Plan, updates: Partial<Plan>) {
+   322→   322→    await fetch("/api/plans", {
+   323→   323→      method: "PATCH",
+   324→   324→      headers: { "Content-Type": "application/json" },
+   325→   325→      body: JSON.stringify({ id: p.id, ...updates }),
+   326→   326→    });
+   327→   327→    toast.success("Plan updated — changes apply live");
+   328→   328→    await fetch("/api/audit", {
+   329→   329→      method: "POST",
+   330→   330→      headers: { "Content-Type": "application/json" },
+   331→   331→      body: JSON.stringify({ actor: "superadmin", action: "plan_change", entity: "plan", entityId: p.id, detail: `Updated ${p.name}` }),
+   332→   332→    });
+   333→   333→    fetch("/api/plans").then((r) => r.json()).then((d) => setPlans(d.plans || []));
+   334→   334→    setEditPlan(null);
+   335→   335→  }
+   336→   336→
+   337→   337→  return (
+   338→   338→    <div className="p-4 space-y-4">
+   339→   339→      <div className="grid md:grid-cols-3 gap-3">
+   340→   340→        {plans.map((p) => (
+   341→   341→          <div key={p.id} className="p-4 rounded-xl border border-border bg-card">
+   342→   342→            <div className="flex items-center justify-between mb-2">
+   343→   343→              <h3 className="text-sm font-semibold">{p.name}</h3>
+   344→   344→              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-card border border-border">{p._count.tenants} tenants</span>
+   345→   345→            </div>
+   346→   346→            <p className="text-2xl font-semibold tnum mb-3">{formatINR(p.priceMonthly)}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+   347→   347→            <div className="space-y-1 text-xs">
+   348→   348→              <Row label="Cities" value={p.limitCities === 999 ? "Unlimited" : String(p.limitCities)} />
+   349→   349→              <Row label="Orders/mo" value={p.limitOrders === 999999 ? "Unlimited" : String(p.limitOrders)} />
+   350→   350→              <Row label="WhatsApp numbers" value={p.limitWhatsApp === 999 ? "Unlimited" : String(p.limitWhatsApp)} />
+   351→   351→              <Row label="Seats" value={p.limitSeats === 999 ? "Unlimited" : String(p.limitSeats)} />
+   352→   352→            </div>
+   353→   353→            <div className="flex flex-wrap gap-1 mt-3">
+   354→   354→              {p.featureWorkflow && <Feature label="Workflow" />}
+   355→   355→              {p.featureEmail && <Feature label="Email" />}
+   356→   356→              {p.featureApi && <Feature label="API" />}
+   357→   357→              {p.featureCustomDomain && <Feature label="Domain" />}
+   358→   358→            </div>
+   359→   359→            <button onClick={() => setEditPlan(p)} className="mt-3 w-full text-xs py-1.5 rounded-lg border border-border hover:border-indigo-500/30">
+   360→   360→              Edit plan
+   361→   361→            </button>
+   362→   362→          </div>
+   363→   363→        ))}
+   364→   364→      </div>
+   365→   365→
+   366→   366→      {editPlan && <EditPlanModal plan={editPlan} onClose={() => setEditPlan(null)} onSave={(u) => savePlan(editPlan, u)} />}
+   367→   367→    </div>
+   368→   368→  );
+   369→   369→}
+   370→   370→
+   371→   371→function EditPlanModal({ plan, onClose, onSave }: { plan: Plan; onClose: () => void; onSave: (u: Partial<Plan>) => void }) {
+   372→   372→  const [priceMonthly, setPriceMonthly] = useState(plan.priceMonthly / 100);
+   373→   373→  const [limitCities, setLimitCities] = useState(plan.limitCities);
+   374→   374→  const [limitOrders, setLimitOrders] = useState(plan.limitOrders);
+   375→   375→
+   376→   376→  return (
+   377→   377→    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
+   378→   378→      <div className="bg-card w-full max-w-md rounded-2xl border border-border animate-scale-in p-5" onClick={(e) => e.stopPropagation()}>
+   379→   379→        <h3 className="text-sm font-semibold mb-3">Edit {plan.name}</h3>
+   380→   380→        <div className="space-y-3">
+   381→   381→          <div>
+   382→   382→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Price (₹/mo)</label>
+   383→   383→            <input type="number" value={priceMonthly} onChange={(e) => setPriceMonthly(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   384→   384→          </div>
+   385→   385→          <div>
+   386→   386→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Cities limit</label>
+   387→   387→            <input type="number" value={limitCities} onChange={(e) => setLimitCities(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   388→   388→          </div>
+   389→   389→          <div>
+   390→   390→            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Orders/mo limit</label>
+   391→   391→            <input type="number" value={limitOrders} onChange={(e) => setLimitOrders(parseInt(e.target.value, 10) || 0)} className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-500/40 tnum" />
+   392→   392→          </div>
+   393→   393→        </div>
+   394→   394→        <div className="flex gap-2 mt-4">
+   395→   395→          <button onClick={onClose} className="flex-1 py-2 rounded-xl border border-border text-sm">Cancel</button>
+   396→   396→          <button onClick={() => onSave({ priceMonthly: priceMonthly * 100, limitCities, limitOrders })} className="flex-1 py-2 rounded-xl bg-indigo-500 hover:bg-indigo-400 text-white text-sm font-medium">
+   397→   397→            Save
+   398→   398→          </button>
+   399→   399→        </div>
+   400→   400→      </div>
+   401→   401→    </div>
+   402→   402→  );
+   403→   403→}
+   404→   404→
+   405→   405→// ─────────────────────────────────────────────────────────────
+   406→   406→// Usage & Revenue
+   407→   407→// ─────────────────────────────────────────────────────────────
+   408→   408→
+   409→   409→function UsagePage() {
+   410→   410→  const [tenants, setTenants] = useState<Tenant[]>([]);
+   411→   411→  useEffect(() => {
+   412→   412→    fetch("/api/tenants").then((r) => r.json()).then((d) => setTenants(d.tenants || []));
+   413→   413→  }, []);
+   414→   414→
+   415→   415→  const totalOrders = tenants.reduce((s, t) => s + t._count.orders, 0);
+   416→   416→  const mrr = tenants.reduce((s, t) => {
+   417→   417→    if (t.plan.name === "Pro") return s + 299900;
+   418→   418→    if (t.plan.name === "Starter") return s + 99900;
+   419→   419→    return s;
+   420→   420→  }, 0);
+   421→   421→
+   422→   422→  return (
+   423→   423→    <div className="p-4 space-y-4">
+   424→   424→      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+   425→   425→        <StatBox label="MRR" value={formatINR(mrr)} icon={TrendingUp} accent="emerald" />
+   426→   426→        <StatBox label="Total tenants" value={String(tenants.length)} icon={Building2} />
+   427→   427→        <StatBox label="Total orders" value={String(totalOrders)} icon={Activity} />
+   428→   428→        <StatBox label="Churn (30d)" value="0%" icon={Ban} accent="emerald" />
+   429→   429→      </div>
+   430→   430→
+   431→   431→      <div>
+   432→   432→        <h3 className="text-sm font-semibold mb-2">Per-tenant usage</h3>
+   433→   433→        <div className="rounded-xl border border-border overflow-hidden">
+   434→   434→          <table className="w-full text-xs">
+   435→   435→            <thead className="bg-card border-b border-border">
+   436→   436→              <tr>
+   437→   437→                <th className="text-left p-2 font-medium text-muted-foreground">Tenant</th>
+   438→   438→                <th className="text-left p-2 font-medium text-muted-foreground">Plan</th>
+   439→   439→                <th className="text-left p-2 font-medium text-muted-foreground">Orders</th>
+   440→   440→                <th className="text-left p-2 font-medium text-muted-foreground">MRR</th>
+   441→   441→                <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
+   442→   442→              </tr>
+   443→   443→            </thead>
+   444→   444→            <tbody>
+   445→   445→              {tenants.map((t) => (
+   446→   446→                <tr key={t.id} className="border-b border-border/40">
+   447→   447→                  <td className="p-2 font-medium">{t.name}</td>
+   448→   448→                  <td className="p-2">{t.plan.name}</td>
+   449→   449→                  <td className="p-2 tnum">{t._count.orders}</td>
+   450→   450→                  <td className="p-2 tnum">{t.plan.name === "Pro" ? formatINR(299900) : t.plan.name === "Starter" ? formatINR(99900) : "—"}</td>
+   451→   451→                  <td className="p-2">{t.status}</td>
+   452→   452→                </tr>
+   453→   453→              ))}
+   454→   454→            </tbody>
+   455→   455→          </table>
+   456→   456→        </div>
+   457→   457→      </div>
+   458→   458→    </div>
+   459→   459→  );
+   460→   460→}
+   461→   461→
+   462→   462→// ─────────────────────────────────────────────────────────────
+   463→   463→// Audit log
+   464→   464→// ─────────────────────────────────────────────────────────────
+   465→   465→
+   466→   466→function AuditPage() {
+   467→   467→  const [logs, setLogs] = useState<AuditLog[]>([]);
+   468→   468→  const [filter, setFilter] = useState("all");
+   469→   469→
+   470→   470→  useEffect(() => {
+   471→   471→    fetch(`/api/audit?super=true${filter !== "all" ? `&action=${filter}` : ""}&limit=200`).then((r) => r.json()).then((d) => setLogs(d.logs || []));
+   472→   472→  }, [filter]);
+   473→   473→
+   474→   474→  return (
+   475→   475→    <div className="p-4 space-y-4">
+   476→   476→      <div className="flex items-center gap-2">
+   477→   477→        <select value={filter} onChange={(e) => setFilter(e.target.value)} className="bg-card border border-border rounded-lg px-3 py-1.5 text-xs outline-none">
+   478→   478→          <option value="all">All actions</option>
+   479→   479→          <option value="plan_change">Plan changes</option>
+   480→   480→          <option value="key_change">Key changes</option>
+   481→   481→          <option value="impersonation_start">Impersonation</option>
+   482→   482→          <option value="suspend">Suspensions</option>
+   483→   483→          <option value="restore">Restores</option>
+   484→   484→          <option value="manual_order">Manual orders</option>
+   485→   485→        </select>
+   486→   486→      </div>
+   487→   487→
+   488→   488→      <div className="space-y-1">
+   489→   489→        {logs.length === 0 ? (
+   490→   490→          <p className="text-center text-xs text-muted-foreground py-8">No audit entries yet</p>
+   491→   491→        ) : (
+   492→   492→          logs.map((l) => (
+   493→   493→            <div key={l.id} className="p-3 rounded-lg border border-border bg-card text-xs">
+   494→   494→              <div className="flex items-center justify-between mb-1">
+   495→   495→                <div className="flex items-center gap-2">
+   496→   496→                  <span className="font-medium px-1.5 py-0.5 rounded bg-card border border-border">{l.action}</span>
+   497→   497→                  <span className="text-muted-foreground">by {l.actor}</span>
+   498→   498→                </div>
+   499→   499→                <span className="text-[10px] text-muted-foreground">{timeAgo(l.createdAt)}</span>
+   500→   500→              </div>
+
+[showing lines 1-500 of 621; use offset=501 with limit to continue reading]

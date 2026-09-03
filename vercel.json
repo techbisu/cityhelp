@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/escalate",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/digest",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/weekly",
+      "schedule": "0 4 * * 1"
+    }
+  ]
+}

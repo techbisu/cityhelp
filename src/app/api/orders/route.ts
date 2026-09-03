@@ -214,7 +214,29 @@ export async function POST(req: NextRequest) {
           detail: `Broadcast to ${toBroadcast.length} provider(s)`,
         },
       });
+      // Real-time: push to providers via WS + web push
+      try {
+        const { broadcastNewOrder } = await import("@/lib/realtime");
+        await broadcastNewOrder(tenant.id, cityId, {
+          id: order.id, code: order.code,
+          service: order.serviceId || "order",
+        });
+      } catch { /* mini-service may be down */ }
+      try {
+        const { notifyProvidersOfNewJob } = await import("@/lib/push");
+        await notifyProvidersOfNewJob(tenant.id, cityId, {
+          id: order.id, code: order.code,
+          service: body.serviceId || "New order",
+          area: order.addressArea || "—",
+        });
+      } catch { /* push optional */ }
     }
+
+    // Plan enforcement: maybe send 80%/100% usage warning email
+    try {
+      const { maybeSendUsageWarning } = await import("@/lib/plan");
+      await maybeSendUsageWarning(tenant.id);
+    } catch { /* non-blocking */ }
   }
 
   return NextResponse.json({ order });

@@ -7,7 +7,7 @@ import {
   ArrowLeft, LayoutDashboard, Package, AlertTriangle, Users, User, Settings, Bot, Building2, Bell,
   Search, Plus, TrendingUp, Clock, Phone, MapPin, ChevronDown, X, Sparkles, Zap, Activity,
   Filter, Check, Ban, MoreVertical, Pencil, Trash2, Power, Star, Shield, Key, Eye, EyeOff,
-  Globe, MessageSquare, CheckCircle2, AlertCircle, Loader2, GripVertical, ArrowRight,
+  Globe, MessageSquare, CheckCircle2, AlertCircle, Loader2, GripVertical, ArrowRight, CreditCard,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -126,7 +126,7 @@ export function AdminApp() {
   const isImpersonating = useApp((s) => s.isImpersonating);
   const setImpersonation = useApp((s) => s.setImpersonation);
 
-  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "team" | "notifications">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "billing" | "team" | "notifications" | "onboarding">("dashboard");
   const [tenant, setTenant] = useState<{ name: string; slug: string; accentColor: string; waBusinessName: string | null; waVerified: boolean } | null>(null);
   const [cities, setCities] = useState<CityT[]>([]);
   const [orders, setOrders] = useState<Job[]>([]);
@@ -241,6 +241,7 @@ export function AdminApp() {
             <p className="px-3 text-[10px] uppercase tracking-wider text-muted-foreground mb-1">Settings</p>
             <NavItem icon={MessageSquare} label="WhatsApp" active={page === "whatsapp"} onClick={() => setPage("whatsapp")} />
             <NavItem icon={Sparkles} label="AI (BYOK)" active={page === "ai"} onClick={() => setPage("ai")} />
+            <NavItem icon={CreditCard} label="Billing" active={page === "billing"} onClick={() => setPage("billing")} />
             <NavItem icon={Users} label="Team" active={page === "team"} onClick={() => setPage("team")} />
             <NavItem icon={Bell} label="Notifications" active={page === "notifications"} onClick={() => setPage("notifications")} />
           </div>
@@ -308,7 +309,22 @@ export function AdminApp() {
             <div className="bg-amber-500/10 border-t border-amber-500/20 px-4 py-1.5 text-xs text-amber-300 flex items-center gap-2">
               <Shield className="w-3.5 h-3.5" />
               You are impersonating this tenant. All actions are audited.
-              <button onClick={() => { setImpersonation(null); setView("platform"); }} className="ml-auto underline hover:text-amber-200">Exit</button>
+              <button onClick={async () => {
+                // Write audit log for impersonation end
+                try {
+                  const tenantsRes = await fetch("/api/tenants").then((r) => r.json());
+                  const t = (tenantsRes.tenants || []).find((x: { slug: string }) => x.slug === effectiveSlug);
+                  if (t) {
+                    await fetch("/api/superadmin/impersonate", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ tenantId: t.id, action: "end" }),
+                    });
+                  }
+                } catch { /* non-blocking */ }
+                setImpersonation(null);
+                setView("platform");
+              }} className="ml-auto underline hover:text-amber-200">Exit</button>
             </div>
           )}
         </header>
@@ -324,6 +340,7 @@ export function AdminApp() {
           {page === "cities" && <CitiesPage slug={effectiveSlug} cities={cities} setCities={setCities} />}
           {page === "whatsapp" && <WhatsAppPage tenant={tenant} />}
           {page === "ai" && <AIPage slug={effectiveSlug} />}
+          {page === "billing" && <BillingPage slug={effectiveSlug} />}
           {page === "team" && <TeamPage slug={effectiveSlug} staffEmail={adminStaffEmail} />}
           {page === "notifications" && <NotificationsPage slug={effectiveSlug} />}
         </main>
@@ -1447,6 +1464,42 @@ function CustomersPage({ slug, customers, setCustomers }: { slug: string; custom
     toast.success(c.isBlocked ? "Customer unblocked" : "Customer blocked");
   }
 
+  async function exportCustomer(c: Customer) {
+    toast.info("Exporting PII…");
+    const res = await fetch(`/api/customers/${c.id}/export?tenantSlug=${slug}`);
+    if (res.status === 403) {
+      toast.error("Access denied");
+      return;
+    }
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `customer-${c.phone}-export.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("PII exported (audit logged)");
+  }
+
+  async function deleteCustomer(c: Customer) {
+    if (!confirm(`Delete PII for ${c.name || c.phone}?\n\nThis anonymizes their personal data. Orders are retained for accounting.\n\nThis action is audited.`)) return;
+    const res = await fetch(`/api/customers/${c.id}/delete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantSlug: slug }),
+    });
+    if (res.ok) {
+      toast.success("Customer PII anonymized (audit logged)");
+      // Refresh list
+      const params = new URLSearchParams({ tenantSlug: slug });
+      if (q) params.set("q", q);
+      fetch(`/api/customers?${params}`).then((r) => r.json()).then((d) => setCustomers(d.customers || []));
+    } else if (res.status === 403) {
+      toast.error("Access denied");
+    }
+  }
+
   return (
     <div className="p-4 space-y-4">
       <input
@@ -1485,12 +1538,28 @@ function CustomersPage({ slug, customers, setCustomers }: { slug: string; custom
                     )}
                   </td>
                   <td className="p-2">
-                    <button
-                      onClick={() => toggleBlock(c)}
-                      className={cn("text-[10px] px-2 py-1 rounded", c.isBlocked ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}
-                    >
-                      {c.isBlocked ? "Unblock" : "Block"}
-                    </button>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => toggleBlock(c)}
+                        className={cn("text-[10px] px-2 py-1 rounded", c.isBlocked ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}
+                      >
+                        {c.isBlocked ? "Unblock" : "Block"}
+                      </button>
+                      <button
+                        onClick={() => exportCustomer(c)}
+                        className="text-[10px] px-2 py-1 rounded bg-card border border-border text-muted-foreground hover:text-foreground"
+                        title="Export PII (GDPR)"
+                      >
+                        <Eye className="w-3 h-3" />
+                      </button>
+                      <button
+                        onClick={() => deleteCustomer(c)}
+                        className="text-[10px] px-2 py-1 rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                        title="Delete PII (GDPR right-to-be-forgotten)"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1962,6 +2031,201 @@ function TeamPage({ slug, staffEmail }: { slug: string; staffEmail: string }) {
         <p className="text-sm font-medium">Invite team members</p>
         <p className="text-xs text-muted-foreground mt-0.5 mb-3">Staff can have orders-only or full access (incl. billing & AI keys)</p>
         <button className="text-xs bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium px-3 py-1.5 rounded-lg">Invite</button>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Billing page — current plan, usage, invoices, upgrade
+// ─────────────────────────────────────────────────────────────
+
+function BillingPage({ slug }: { slug: string }) {
+  const [data, setData] = useState<{
+    tenant: { name: string; status: string; trialEndsAt: string | null; currentPeriodEnd: string | null; dunningStartedAt: string | null };
+    currentPlan: { id: string; name: string; priceMonthly: number; limitCities: number; limitOrders: number; limitWhatsApp: number; limitSeats: number; featureEmail: boolean; featureApi: boolean; featureCustomDomain: boolean; featureWorkflow: boolean };
+    limits: { cities: number; orders: number; whatsapp: number; seats: number; featureEmail: boolean; featureApi: boolean };
+    usage: { cities: number; ordersThisMonth: number; whatsapp: number; seats: number };
+    availablePlans: Array<{ id: string; name: string; priceMonthly: number; limitCities: number; limitOrders: number; limitWhatsApp: number; limitSeats: number }>;
+  } | null>(null);
+  const [invoices, setInvoices] = useState<Array<{ id: string; invoiceNumber: string; amount: number; planName: string; status: string; paidAt: string | null; periodStart: string; periodEnd: string; paymentMethod: string | null }>>([]);
+  const [checkoutOpen, setCheckoutOpen] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(`/api/billing/plan?tenantSlug=${slug}`).then((r) => r.json()).then(setData);
+    fetch(`/api/billing/invoices?tenantSlug=${slug}`).then((r) => r.json()).then((d) => setInvoices(d.invoices || []));
+  }, [slug]);
+
+  if (!data) return <div className="p-6"><div className="h-32 shimmer rounded-xl" /></div>;
+
+  const usagePercent = (current: number, limit: number) => limit > 0 ? Math.min(100, Math.round((current / limit) * 100)) : 0;
+
+  return (
+    <div className="p-4 space-y-4 max-w-3xl">
+      {/* Current plan */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Current plan</p>
+            <p className="text-xl font-semibold mt-0.5">{data.currentPlan.name}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              ₹{data.currentPlan.priceMonthly / 100}/mo · {data.tenant.status}
+              {data.tenant.trialEndsAt && ` · trial ends ${timeAgo(data.tenant.trialEndsAt)}`}
+              {data.tenant.dunningStartedAt && <span className="text-rose-300 ml-1">· dunning (payment failed)</span>}
+            </p>
+          </div>
+          {data.tenant.dunningStartedAt && (
+            <span className="text-xs px-2 py-1 rounded-full bg-rose-500/15 text-rose-300">Payment overdue</span>
+          )}
+        </div>
+
+        {/* Usage bars */}
+        <div className="space-y-3">
+          <UsageBar label="Cities" current={data.usage.cities} limit={data.limits.cities} />
+          <UsageBar label="Orders this month" current={data.usage.ordersThisMonth} limit={data.limits.orders} />
+          <UsageBar label="WhatsApp numbers" current={data.usage.whatsapp} limit={data.limits.whatsapp} />
+          <UsageBar label="Team seats" current={data.usage.seats} limit={data.limits.seats} />
+        </div>
+      </div>
+
+      {/* Available plans */}
+      <div>
+        <h3 className="text-sm font-semibold mb-3">Available plans</h3>
+        <div className="grid md:grid-cols-3 gap-3">
+          {data.availablePlans.map((p) => {
+            const isCurrent = p.id === data.currentPlan.id;
+            return (
+              <div key={p.id} className={cn("p-4 rounded-xl border bg-card", isCurrent ? "border-emerald-500/40" : "border-border")}>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-semibold">{p.name}</h4>
+                  {isCurrent && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">Current</span>}
+                </div>
+                <p className="text-2xl font-semibold tnum mb-3">₹{p.priceMonthly / 100}<span className="text-xs text-muted-foreground font-normal">/mo</span></p>
+                <ul className="space-y-1 text-xs text-muted-foreground mb-3">
+                  <li>{p.limitCities === 999 ? "Unlimited" : p.limitCities} cities</li>
+                  <li>{p.limitOrders === 999999 ? "Unlimited" : p.limitOrders.toLocaleString()} orders/mo</li>
+                  <li>{p.limitWhatsApp === 999 ? "Unlimited" : p.limitWhatsApp} WhatsApp numbers</li>
+                  <li>{p.limitSeats === 999 ? "Unlimited" : p.limitSeats} team seats</li>
+                </ul>
+                {!isCurrent && (
+                  <button
+                    onClick={() => setCheckoutOpen(p.id)}
+                    className="w-full text-xs py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium"
+                  >
+                    Upgrade to {p.name}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Invoices */}
+      <div>
+        <h3 className="text-sm font-semibold mb-2">Invoices</h3>
+        {invoices.length === 0 ? (
+          <div className="p-6 rounded-xl border border-dashed border-border text-center">
+            <CreditCard className="w-6 h-6 text-muted-foreground mx-auto mb-2 opacity-50" />
+            <p className="text-sm font-medium">No invoices yet</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Upgrade to a paid plan to see invoices here</p>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-border overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-card border-b border-border">
+                <tr>
+                  <th className="text-left p-2 font-medium text-muted-foreground">Invoice</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground">Plan</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground">Amount</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground">Period</th>
+                  <th className="text-left p-2 font-medium text-muted-foreground">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {invoices.map((inv) => (
+                  <tr key={inv.id} className="border-b border-border/40">
+                    <td className="p-2 font-mono">{inv.invoiceNumber}</td>
+                    <td className="p-2">{inv.planName}</td>
+                    <td className="p-2 tnum">₹{inv.amount / 100}</td>
+                    <td className="p-2 text-muted-foreground">{new Date(inv.periodStart).toLocaleDateString()} – {new Date(inv.periodEnd).toLocaleDateString()}</td>
+                    <td className="p-2">
+                      <span className={cn("px-1.5 py-0.5 rounded text-[10px]",
+                        inv.status === "paid" ? "bg-emerald-500/15 text-emerald-300" :
+                        inv.status === "failed" ? "bg-rose-500/15 text-rose-300" :
+                        "bg-amber-500/15 text-amber-300"
+                      )}>{inv.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {checkoutOpen && (
+        <CheckoutModal planId={checkoutOpen} slug={slug} onClose={() => setCheckoutOpen(null)} onDone={() => {
+          setCheckoutOpen(null);
+          fetch(`/api/billing/plan?tenantSlug=${slug}`).then((r) => r.json()).then(setData);
+          fetch(`/api/billing/invoices?tenantSlug=${slug}`).then((r) => r.json()).then((d) => setInvoices(d.invoices || []));
+        }} />
+      )}
+    </div>
+  );
+}
+
+function UsageBar({ label, current, limit }: { label: string; current: number; limit: number }) {
+  const percent = limit > 0 ? Math.min(100, Math.round((current / limit) * 100)) : 0;
+  const color = percent >= 100 ? "bg-rose-500" : percent >= 80 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-muted-foreground">{label}</span>
+        <span className="text-xs tnum">{current} / {limit === 999 ? "∞" : limit} {percent >= 80 && <span className="text-amber-400 ml-1">({percent}%)</span>}</span>
+      </div>
+      <div className="h-1.5 bg-background rounded-full overflow-hidden">
+        <div className={cn("h-full transition-all", color)} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function CheckoutModal({ planId, slug, onClose, onDone }: { planId: string; slug: string; onClose: () => void; onDone: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; billingConfigured: boolean; invoiceNumber?: string; planName?: string; message?: string } | null>(null);
+
+  async function handleCheckout() {
+    setLoading(true);
+    const res = await fetch("/api/billing/checkout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantSlug: slug, planId }),
+    });
+    const data = await res.json();
+    setResult(data);
+    setLoading(false);
+    if (data.ok || data.billingConfigured === false) {
+      // In production, Razorpay checkout would open here
+      setTimeout(() => onDone(), 2000);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-card w-full max-w-md rounded-2xl border border-border p-6 animate-scale-in" onClick={(e) => e.stopPropagation()}>
+        <h3 className="text-sm font-semibold mb-1">Upgrade plan</h3>
+        <p className="text-xs text-muted-foreground mb-4">You'll be redirected to Razorpay's secure checkout.</p>
+        {result ? (
+          <div className={cn("p-3 rounded-lg text-xs", result.ok ? "bg-emerald-500/10 text-emerald-300" : "bg-amber-500/10 text-amber-300")}>
+            {result.ok ? `✓ Checkout initiated. Invoice ${result.invoiceNumber} created.` : result.message || "Billing not yet configured. Contact support."}
+          </div>
+        ) : (
+          <button onClick={handleCheckout} disabled={loading} className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm">
+            {loading ? "Creating checkout…" : "Continue to checkout"}
+          </button>
+        )}
+        <button onClick={onClose} className="w-full mt-2 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
       </div>
     </div>
   );

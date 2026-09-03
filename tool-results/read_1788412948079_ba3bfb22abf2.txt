@@ -1,0 +1,924 @@
+     1→     1→/**
+     2→     2→ * POST /api/bot/send
+     3→     3→ * Body: { tenantSlug, phone, message?: text, button?: id, location?: {lat,lng}, mediaType?: "voice"|"image" }
+     4→     4→ *
+     5→     5→ * Returns: { replies: BotReply[], session: {...}, order?: {...} }
+     6→     6→ *
+     7→     7→ * BotReply = { kind: "text" | "buttons" | "list", text, buttons?, sections? }
+     8→     8→ *
+     9→     9→ * State machine: language → menu → service_draft → address → confirm → done
+    10→    10→ * Resilient: "cancel"/"menu" anywhere → back to menu. Old button taps → re-show current step.
+    11→    11→ */
+    12→    12→import { NextRequest, NextResponse } from "next/server";
+    13→    13→import { db } from "@/lib/db";
+    14→    14→import { safeParse, reverseGeocodeStub } from "@/lib/utils";
+    15→    15→
+    16→    16→interface BotReply {
+    17→    17→  kind: "text" | "buttons" | "list";
+    18→    18→  text: string;
+    19→    19→  buttons?: Array<{ id: string; label: string }>;
+    20→    20→  sections?: Array<{ title: string; rows: Array<{ id: string; title: string; description?: string }> }>;
+    21→    21→  listTitle?: string;
+    22→    22→  listButton?: string;
+    23→    23→}
+    24→    24→
+    25→    25→const LANGUAGES: Array<{ code: string; label: string; flag: string }> = [
+    26→    26→  { code: "en", label: "English", flag: "🇬🇧" },
+    27→    27→  { code: "hi", label: "हिन्दी", flag: "🇮🇳" },
+    28→    28→];
+    29→    29→
+    30→    30→// ─────────────────────────────────────────────────────────────
+    31→    31→// Helpers
+    32→    32→// ─────────────────────────────────────────────────────────────
+    33→    33→
+    34→    34→function t(tenant: { waBusinessName: string | null }, lang: "en" | "hi", key: string, vars?: Record<string, string>): string {
+    35→    35→  const name = tenant.waBusinessName || "CityHelp";
+    36→    36→  const en: Record<string, string> = {
+    37→    37→    welcome: `Welcome to *${name}*! 👋\nChoose your language:`,
+    38→    38→    menu_title: "What would you like today?",
+    39→    39→    menu_button: "📋 View Menu",
+    40→    40→    ask_cake: "🎂 What cake would you like?\n_Flavor, weight, message_",
+    41→    41→    ask_grocery: "🛒 Send your grocery list — type below, send a voice note, or photo of a handwritten list.",
+    42→    42→    ask_grocery_summary: "Here's your list so far:",
+    43→    43→    ask_grocery_add_more: "Send more items, or tap Done.",
+    44→    44→    ask_chicken: "🍗 What would you like?\n_E.g. 1kg chicken curry cut, 500g mutton_",
+    45→    45→    ask_parcel: "📦 What's the parcel?\n_Contents, pickup point, drop point_",
+    46→    46→    ask_ride: "🚗 Where to?\n_Pickup & drop, e.g. Andheri station to Bandra_",
+    47→    47→    ask_repair: "🧰 What needs repair?\n_E.g. LG AC not cooling, model GL-S0524_",
+    48→    48→    ask_team: "👥 Connecting you to our team. Please describe briefly what you need.",
+    49→    49→    ask_custom: "Please describe what you need — we'll get back with a quote.",
+    50→    50→    ask_shop: "Any preferred shop? (optional)",
+    51→    51→    ask_timing: "When do you need it?",
+    52→    52→    ask_timing_book: "Pick a time slot:",
+    53→    53→    ask_address: "📍 Share your address — send a WhatsApp location pin OR type it with landmark.",
+    54→    54→    ask_address_confirm: "Is *{area}* correct?",
+    55→    55→    confirm_title: "📋 *Order Summary*",
+    56→    56→    confirm_ask: "Confirm your order?",
+    57→    57→    placed: "✅ Order placed! Code *#{code}*\nOur partner will call you in ~10 minutes.",
+    58→    58→    cancelled: "❌ Order cancelled. Type *menu* to start again.",
+    59→    59→    back_to_menu: "↩️ Back to main menu.",
+    60→    60→    nudge: "You have an unfinished order. Continue?",
+    61→    61→    invalid: "Sorry, I didn't understand that. Tap a button below 👇",
+    62→    62→    old_button: "That was from an older message. Here's your current step 👇",
+    63→    63→    voice_received: "🎙️ Voice note received. Processing…",
+    64→    64→    photo_received: "📸 Photo received. Reading the list…",
+    65→    65→    voice_failed: "Couldn't process your voice note. Please type your list, or our team will help.",
+    66→    66→    photo_failed: "Couldn't read the photo. Please type your list, or our team will help.",
+    67→    67→    grocery_done: "Great! Your list is locked in.",
+    68→    68→    ask_more: "Anything else to add? Send more items or tap Done.",
+    69→    69→  };
+    70→    70→  const hi: Record<string, string> = {
+    71→    71→    welcome: `${name} में आपका स्वागत है! 👋\nअपनी भाषा चुनें:`,
+    72→    72→    menu_title: "आज क्या चाहिए?",
+    73→    73→    menu_button: "📋 मेनू देखें",
+    74→    74→    ask_cake: "🎂 आपको कौन सा केक चाहिए?\n_स्वाद, वजन, संदेश_",
+    75→    75→    ask_grocery: "🛒 अपनी किराने की लिस्ट भेजें — टाइप करें, वॉइस नोट, या फोटो।",
+    76→    76→    ask_grocery_summary: "आपकी लिस्ट अब तक:",
+    77→    77→    ask_grocery_add_more: "और आइटम भेजें, या हो गया दबाएं।",
+    78→    78→    ask_chicken: "🍗 क्या चाहिए?\n_जैसे 1kg चिकन करी कट, 500g मटन_",
+    79→    79→    ask_parcel: "📦 पार्सल क्या है?\n_सामग्री, पिकअप, ड्रॉप_",
+    80→    80→    ask_ride: "🚗 कहाँ जाना है?\n_पिकअप और ड्रॉप_",
+    81→    81→    ask_repair: "🧰 क्या रिपेयर करना है?\n_जैसे LG एसी ठंडा नहीं कर रहा_",
+    82→    82→    ask_team: "👥 हमारी टीम से जोड़ रहे हैं। बताइए क्या ज़रूरत है।",
+    83→    83→    ask_custom: "बताइए क्या चाहिए — हम कोटेशन देंगे।",
+    84→    84→    ask_shop: "कोई पसंदीदा दुकान? (वैकल्पिक)",
+    85→    85→    ask_timing: "कब चाहिए?",
+    86→    86→    ask_timing_book: "टाइम स्लॉट चुनें:",
+    87→    87→    ask_address: "📍 पता भेजें — लोकेशन पिन भेजें या टाइप करें।",
+    88→    88→    ask_address_confirm: "क्या *{area}* सही है?",
+    89→    89→    confirm_title: "📋 *ऑर्डर सारांश*",
+    90→    90→    confirm_ask: "ऑर्डर कन्फर्म करें?",
+    91→    91→    placed: "✅ ऑर्डर हो गया! कोड *#{code}*\nहमारा पार्टनर ~10 मिनट में कॉल करेगा।",
+    92→    92→    cancelled: "❌ ऑर्डर रद्द। *मेनू* टाइप करें।",
+    93→    93→    back_to_menu: "↩️ मुख्य मेनू।",
+    94→    94→    nudge: "आपका ऑर्डर अधूरा है। जारी रखें?",
+    95→    95→    invalid: "समझ नहीं आया। नीचे बटन दबाएं 👇",
+    96→    96→    old_button: "वह पुराना था। यह रहा अभी का स्टेप 👇",
+    97→    97→    voice_received: "🎙️ वॉइस नोट मिला। प्रोसेस हो रहा है…",
+    98→    98→    photo_received: "📸 फोटो मिली। लिस्ट पढ़ रहे हैं…",
+    99→    99→    voice_failed: "वॉइस प्रोसेस नहीं हो सकी। कृपया टाइप करें।",
+   100→   100→    photo_failed: "फोटो पढ़ी नहीं जा सकी। कृपया टाइप करें।",
+   101→   101→    grocery_done: "बढ़िया! लिस्ट हो गई।",
+   102→   102→    ask_more: "और कुछ? आइटम भेजें या हो गया दबाएं।",
+   103→   103→  };
+   104→   104→  const dict = lang === "hi" ? hi : en;
+   105→   105→  let s = dict[key] ?? en[key] ?? key;
+   106→   106→  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
+   107→   107→  return s;
+   108→   108→}
+   109→   109→
+   110→   110→function buildMenuList(tenantId: string, services: Array<{ id: string; key: string; kind: string; icon: string; labels: string }>, lang: "en" | "hi") {
+   111→   111→  const rows = services
+   112→   112→    .filter((s) => s.kind !== "custom" || s.key === "custom")
+   113→   113→    .sort((a, b) => {
+   114→   114→      const order = ["cake", "grocery", "chicken", "parcel", "ride", "repair", "team", "custom"];
+   115→   115→      return order.indexOf(a.key) - order.indexOf(b.key);
+   116→   116→    })
+   117→   117→    .map((s) => {
+   118→   118→      const labels = safeParse<Record<string, string>>(s.labels, {});
+   119→   119→      return {
+   120→   120→        id: `svc_${s.id}`,
+   121→   121→        title: `${s.icon} ${labels[lang] || labels.en || s.key}`,
+   122→   122→        description: s.kind === "order" ? "Order now" : s.kind === "book" ? "Book a slot" : s.kind === "team" ? "Talk to us" : "Tell us what you need",
+   123→   123→      };
+   124→   124→    });
+   125→   125→  return rows;
+   126→   126→}
+   127→   127→
+   128→   128→// ─────────────────────────────────────────────────────────────
+   129→   129→// Main handler
+   130→   130→// ─────────────────────────────────────────────────────────────
+   131→   131→
+   132→   132→export async function POST(req: NextRequest) {
+   133→   133→  const body = await req.json();
+   134→   134→  const { tenantSlug, phone, message, button, location, mediaType } = body as {
+   135→   135→    tenantSlug: string;
+   136→   136→    phone: string;
+   137→   137→    message?: string;
+   138→   138→    button?: string;
+   139→   139→    location?: { lat: number; lng: number };
+   140→   140→    mediaType?: "voice" | "image";
+   141→   141→  };
+   142→   142→
+   143→   143→  if (!tenantSlug || !phone) {
+   144→   144→    return NextResponse.json({ error: "tenantSlug and phone required" }, { status: 400 });
+   145→   145→  }
+   146→   146→
+   147→   147→  const tenant = await db.tenant.findUnique({
+   148→   148→    where: { slug: tenantSlug },
+   149→   149→    include: {
+   150→   150→      services: { where: { isActive: true } },
+   151→   151→      cities: { where: { isActive: true } },
+   152→   152→    },
+   153→   153→  });
+   154→   154→  if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+   155→   155→
+   156→   156→  // Find or create customer
+   157→   157→  let customer = await db.customer.findUnique({
+   158→   158→    where: { tenantId_phone: { tenantId: tenant.id, phone } },
+   159→   159→  });
+   160→   160→  if (!customer) {
+   161→   161→    customer = await db.customer.create({
+   162→   162→      data: { tenantId: tenant.id, phone, language: "en" },
+   163→   163→    });
+   164→   164→  }
+   165→   165→
+   166→   166→  // Find or create session
+   167→   167→  let session = await db.botSession.findUnique({
+   168→   168→    where: { tenantId_phone: { tenantId: tenant.id, phone } },
+   169→   169→  });
+   170→   170→  if (!session) {
+   171→   171→    session = await db.botSession.create({
+   172→   172→      data: { tenantId: tenant.id, customerId: customer.id, phone },
+   173→   173→    });
+   174→   174→  }
+   175→   175→
+   176→   176→  const lang = (customer.language as "en" | "hi") || "en";
+   177→   177→  const replies: BotReply[] = [];
+   178→   178→
+   179→   179→  // ── Handle "cancel" / "menu" anywhere ────────────────────
+   180→   180→  const text = (message || "").trim().toLowerCase();
+   181→   181→  if (text === "cancel" || text === "❌ cancel" || text === "cancel order") {
+   182→   182→    // Reset draft
+   183→   183→    await db.botSession.update({
+   184→   184→      where: { id: session.id },
+   185→   185→      data: {
+   186→   186→        state: "menu",
+   187→   187→        draftService: null,
+   188→   188→        draftItems: "[]",
+   189→   189→        draftTiming: null,
+   190→   190→        draftShop: null,
+   191→   191→        draftAddress: null,
+   192→   192→        draftLat: null,
+   193→   193→        draftLng: null,
+   194→   194→      },
+   195→   195→    });
+   196→   196→    replies.push({ kind: "text", text: t(tenant, lang, "cancelled") });
+   197→   197→    // Show menu
+   198→   198→    const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   199→   199→    replies.push({
+   200→   200→      kind: "list",
+   201→   201→      text: t(tenant, lang, "menu_title"),
+   202→   202→      listTitle: t(tenant, lang, "menu_title"),
+   203→   203→      listButton: t(tenant, lang, "menu_button"),
+   204→   204→      sections: [{ title: "Services", rows: menuRows }],
+   205→   205→    });
+   206→   206→    return NextResponse.json({ replies, session: { state: "menu" } });
+   207→   207→  }
+   208→   208→
+   209→   209→  if (text === "menu" || text === "start" || text === "hi" || text === "hello") {
+   210→   210→    await db.botSession.update({
+   211→   211→      where: { id: session.id },
+   212→   212→      data: { state: "menu", draftService: null, draftItems: "[]" },
+   213→   213→    });
+   214→   214→    const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   215→   215→    replies.push({
+   216→   216→      kind: "list",
+   217→   217→      text: t(tenant, lang, "menu_title"),
+   218→   218→      listTitle: t(tenant, lang, "menu_title"),
+   219→   219→      listButton: t(tenant, lang, "menu_button"),
+   220→   220→      sections: [{ title: "Services", rows: menuRows }],
+   221→   221→    });
+   222→   222→    return NextResponse.json({ replies, session: { state: "menu" } });
+   223→   223→  }
+   224→   224→
+   225→   225→  // ── State machine ────────────────────────────────────────
+   226→   226→  switch (session.state) {
+   227→   227→    case "language": {
+   228→   228→      if (button === "lang_en") {
+   229→   229→        await db.customer.update({ where: { id: customer.id }, data: { language: "en" } });
+   230→   230→        const menuRows = buildMenuList(tenant.id, tenant.services, "en");
+   231→   231→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   232→   232→        replies.push({
+   233→   233→          kind: "list",
+   234→   234→          text: t(tenant, "en", "menu_title"),
+   235→   235→          listTitle: t(tenant, "en", "menu_title"),
+   236→   236→          listButton: t(tenant, "en", "menu_button"),
+   237→   237→          sections: [{ title: "Services", rows: menuRows }],
+   238→   238→        });
+   239→   239→      } else if (button === "lang_hi") {
+   240→   240→        await db.customer.update({ where: { id: customer.id }, data: { language: "hi" } });
+   241→   241→        const menuRows = buildMenuList(tenant.id, tenant.services, "hi");
+   242→   242→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   243→   243→        replies.push({
+   244→   244→          kind: "list",
+   245→   245→          text: t(tenant, "hi", "menu_title"),
+   246→   246→          listTitle: t(tenant, "hi", "menu_title"),
+   247→   247→          listButton: t(tenant, "hi", "menu_button"),
+   248→   248→          sections: [{ title: "Services", rows: menuRows }],
+   249→   249→        });
+   250→   250→      } else {
+   251→   251→        replies.push({
+   252→   252→          kind: "buttons",
+   253→   253→          text: t(tenant, lang, "welcome"),
+   254→   254→          buttons: [
+   255→   255→            { id: "lang_en", label: "🇬🇧 English" },
+   256→   256→            { id: "lang_hi", label: "🇮🇳 हिन्दी" },
+   257→   257→          ],
+   258→   258→        });
+   259→   259→      }
+   260→   260→      break;
+   261→   261→    }
+   262→   262→
+   263→   263→    case "menu": {
+   264→   264→      // Handle list item tap: svc_<id>
+   265→   265→      if (button && button.startsWith("svc_")) {
+   266→   266→        const svcId = button.slice(4);
+   267→   267→        const svc = tenant.services.find((s) => s.id === svcId);
+   268→   268→        if (!svc) {
+   269→   269→          replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   270→   270→          break;
+   271→   271→        }
+   272→   272→        await db.botSession.update({
+   273→   273→          where: { id: session.id },
+   274→   274→          data: { state: "service_draft", draftService: svc.id, draftItems: "[]", draftShop: null, draftTiming: null },
+   275→   275→        });
+   276→   276→        // Service-specific first message
+   277→   277→        if (svc.key === "grocery") {
+   278→   278→          replies.push({ kind: "buttons", text: t(tenant, lang, "ask_grocery"), buttons: [
+   279→   279→            { id: "grocery_done", label: "✅ Done" },
+   280→   280→            { id: "grocery_more", label: "➕ Add more" },
+   281→   281→            { id: "cancel", label: "❌ Start over" },
+   282→   282→          ]});
+   283→   283→        } else if (svc.kind === "order") {
+   284→   284→          replies.push({ kind: "text", text: t(tenant, lang, `ask_${svc.key}`) });
+   285→   285→        } else if (svc.kind === "book") {
+   286→   286→          replies.push({ kind: "text", text: t(tenant, lang, `ask_${svc.key}`) });
+   287→   287→        } else if (svc.kind === "team") {
+   288→   288→          replies.push({ kind: "text", text: t(tenant, lang, "ask_team") });
+   289→   289→          // Mark as custom
+   290→   290→          await db.botSession.update({
+   291→   291→            where: { id: session.id },
+   292→   292→            data: { state: "service_draft", draftService: svc.id },
+   293→   293→          });
+   294→   294→        } else if (svc.kind === "custom") {
+   295→   295→          replies.push({ kind: "text", text: t(tenant, lang, "ask_custom") });
+   296→   296→        }
+   297→   297→      } else {
+   298→   298→        // Re-show menu
+   299→   299→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   300→   300→        replies.push({
+   301→   301→          kind: "list",
+   302→   302→          text: t(tenant, lang, "old_button") + "\n" + t(tenant, lang, "menu_title"),
+   303→   303→          listTitle: t(tenant, lang, "menu_title"),
+   304→   304→          listButton: t(tenant, lang, "menu_button"),
+   305→   305→          sections: [{ title: "Services", rows: menuRows }],
+   306→   306→        });
+   307→   307→      }
+   308→   308→      break;
+   309→   309→    }
+   310→   310→
+   311→   311→    case "service_draft": {
+   312→   312→      const svcId = session.draftService;
+   313→   313→      if (!svcId) {
+   314→   314→        // Reset
+   315→   315→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   316→   316→        replies.push({ kind: "text", text: t(tenant, lang, "back_to_menu") });
+   317→   317→        break;
+   318→   318→      }
+   319→   319→      const svc = tenant.services.find((s) => s.id === svcId);
+   320→   320→      if (!svc) {
+   321→   321→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu", draftService: null } });
+   322→   322→        replies.push({ kind: "text", text: t(tenant, lang, "back_to_menu") });
+   323→   323→        break;
+   324→   324→      }
+   325→   325→
+   326→   326→      // ── Grocery: accumulate items until Done ──────────
+   327→   327→      if (svc.key === "grocery") {
+   328→   328→        if (button === "grocery_done") {
+   329→   329→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   330→   330→          if (items.length === 0) {
+   331→   331→            replies.push({ kind: "text", text: "Your list is empty. Add items first." });
+   332→   332→            break;
+   333→   333→          }
+   334→   334→          replies.push({ kind: "text", text: t(tenant, lang, "grocery_done") });
+   335→   335→          // Move to shop question
+   336→   336→          await db.botSession.update({
+   337→   337→            where: { id: session.id },
+   338→   338→            data: { state: "shop" },
+   339→   339→          });
+   340→   340→          replies.push({
+   341→   341→            kind: "buttons",
+   342→   342→            text: t(tenant, lang, "ask_shop"),
+   343→   343→            buttons: [
+   344→   344→              { id: "shop_any", label: "🏪 Any shop" },
+   345→   345→              { id: "shop_specify", label: "✏️ Specify" },
+   346→   346→            ],
+   347→   347→          });
+   348→   348→          break;
+   349→   349→        }
+   350→   350→        if (button === "grocery_more" || message || mediaType) {
+   351→   351→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   352→   352→          // If media, simulate AI extraction
+   353→   353→          if (mediaType === "voice") {
+   354→   354→            replies.push({ kind: "text", text: t(tenant, lang, "voice_received") });
+   355→   355→            // Simulated extraction
+   356→   356→            const fakeItems = [
+   357→   357→              { name: "Rice 5kg", qty: 1 },
+   358→   358→              { name: "Cooking Oil 1L", qty: 2 },
+   359→   359→              { name: "Sugar 1kg", qty: 1 },
+   360→   360→            ];
+   361→   361→            const merged = [...items, ...fakeItems];
+   362→   362→            await db.botSession.update({
+   363→   363→              where: { id: session.id },
+   364→   364→              data: { draftItems: JSON.stringify(merged) },
+   365→   365→            });
+   366→   366→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   367→   367→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   368→   368→              { id: "grocery_done", label: "✅ Done" },
+   369→   369→              { id: "grocery_more", label: "➕ Add more" },
+   370→   370→              { id: "cancel", label: "❌ Start over" },
+   371→   371→            ]});
+   372→   372→            break;
+   373→   373→          }
+   374→   374→          if (mediaType === "image") {
+   375→   375→            replies.push({ kind: "text", text: t(tenant, lang, "photo_received") });
+   376→   376→            const fakeItems = [
+   377→   377→              { name: "Atta 10kg", qty: 1 },
+   378→   378→              { name: "Tea 250g", qty: 1 },
+   379→   379→              { name: "Biscuits", qty: 3 },
+   380→   380→            ];
+   381→   381→            const merged = [...items, ...fakeItems];
+   382→   382→            await db.botSession.update({
+   383→   383→              where: { id: session.id },
+   384→   384→              data: { draftItems: JSON.stringify(merged) },
+   385→   385→            });
+   386→   386→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   387→   387→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   388→   388→              { id: "grocery_done", label: "✅ Done" },
+   389→   389→              { id: "grocery_more", label: "➕ Add more" },
+   390→   390→              { id: "cancel", label: "❌ Start over" },
+   391→   391→            ]});
+   392→   392→            break;
+   393→   393→          }
+   394→   394→          // Parse typed items (split by newlines or commas)
+   395→   395→          if (message) {
+   396→   396→            const lines = message.split(/\n|,|;/).map((l) => l.trim()).filter(Boolean);
+   397→   397→            const newItems = lines.map((l) => {
+   398→   398→              const m = l.match(/^(\d+\.?\d*)\s*(?:x|×|kg|g|l|ltr|pcs|piece|pkt|pack)?\s*(.*)/i);
+   399→   399→              if (m && m[2]) return { name: m[2], qty: m[1] };
+   400→   400→              return { name: l, qty: 1 };
+   401→   401→            });
+   402→   402→            const merged = [...items, ...newItems];
+   403→   403→            await db.botSession.update({
+   404→   404→              where: { id: session.id },
+   405→   405→              data: { draftItems: JSON.stringify(merged) },
+   406→   406→            });
+   407→   407→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   408→   408→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   409→   409→              { id: "grocery_done", label: "✅ Done" },
+   410→   410→              { id: "grocery_more", label: "➕ Add more" },
+   411→   411→              { id: "cancel", label: "❌ Start over" },
+   412→   412→            ]});
+   413→   413→          }
+   414→   414→          break;
+   415→   415→        }
+   416→   416→      }
+   417→   417→
+   418→   418→      // ── Other services: capture description/timing ─────
+   419→   419→      if (button === "grocery_done") {
+   420→   420→        // edge case
+   421→   421→        await db.botSession.update({ where: { id: session.id }, data: { state: "shop" } });
+   422→   422→        replies.push({
+   423→   423→          kind: "buttons",
+   424→   424→          text: t(tenant, lang, "ask_shop"),
+   425→   425→          buttons: [
+   426→   426→            { id: "shop_any", label: "🏪 Any shop" },
+   427→   427→            { id: "shop_specify", label: "✏️ Specify" },
+   428→   428→          ],
+   429→   429→        });
+   430→   430→        break;
+   431→   431→      }
+   432→   432→
+   433→   433→      // For order/book services, capture the message as items/description
+   434→   434→      if (message) {
+   435→   435→        await db.botSession.update({
+   436→   436→          where: { id: session.id },
+   437→   437→          data: {
+   438→   438→            draftItems: JSON.stringify([{ name: message, qty: 1 }]),
+   439→   439→            state: "shop",
+   440→   440→          },
+   441→   441→        });
+   442→   442→        if (svc.kind === "order") {
+   443→   443→          replies.push({
+   444→   444→            kind: "buttons",
+   445→   445→            text: t(tenant, lang, "ask_shop"),
+   446→   446→            buttons: [
+   447→   447→              { id: "shop_any", label: "🏪 Any shop" },
+   448→   448→              { id: "shop_specify", label: "✏️ Specify" },
+   449→   449→            ],
+   450→   450→          });
+   451→   451→        } else {
+   452→   452→          // Book → ask timing directly
+   453→   453→          await db.botSession.update({ where: { id: session.id }, data: { state: "timing" } });
+   454→   454→          replies.push({
+   455→   455→            kind: "buttons",
+   456→   456→            text: t(tenant, lang, "ask_timing_book"),
+   457→   457→            buttons: [
+   458→   458→              { id: "slot_today_2_4", label: "Today 2–4pm" },
+   459→   459→              { id: "slot_today_4_6", label: "Today 4–6pm" },
+   460→   460→              { id: "slot_tmr_morn", label: "Tomorrow morning" },
+   461→   461→              { id: "slot_custom", label: "✏️ Type own" },
+   462→   462→            ],
+   463→   463→          });
+   464→   464→        }
+   465→   465→      } else if (svc.kind === "team" || svc.kind === "custom") {
+   466→   466→        // Wait for message
+   467→   467→        if (!message) {
+   468→   468→          replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   469→   469→        }
+   470→   470→      } else {
+   471→   471→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   472→   472→      }
+   473→   473→      break;
+   474→   474→    }
+   475→   475→
+   476→   476→    case "shop": {
+   477→   477→      if (button === "shop_any") {
+   478→   478→        await db.botSession.update({
+   479→   479→          where: { id: session.id },
+   480→   480→          data: { draftShop: null, state: "timing" },
+   481→   481→        });
+   482→   482→        replies.push({
+   483→   483→          kind: "buttons",
+   484→   484→          text: t(tenant, lang, "ask_timing"),
+   485→   485→          buttons: [
+   486→   486→            { id: "slot_asap", label: "⚡ ASAP" },
+   487→   487→            { id: "slot_today_eve", label: "🌆 Today evening" },
+   488→   488→            { id: "slot_tmr", label: "📅 Tomorrow" },
+   489→   489→            { id: "slot_custom", label: "✏️ Type own" },
+   490→   490→          ],
+   491→   491→        });
+   492→   492→      } else if (button === "shop_specify") {
+   493→   493→        replies.push({ kind: "text", text: "Type the shop name:" });
+   494→   494→        // Stay in shop state, wait for text
+   495→   495→        await db.botSession.update({ where: { id: session.id }, data: { state: "shop_text" } });
+   496→   496→      } else {
+   497→   497→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   498→   498→      }
+   499→   499→      break;
+   500→   500→    }
+   501→   501→
+   502→   502→    case "shop_text": {
+   503→   503→      if (message) {
+   504→   504→        await db.botSession.update({
+   505→   505→          where: { id: session.id },
+   506→   506→          data: { draftShop: message, state: "timing" },
+   507→   507→        });
+   508→   508→        replies.push({
+   509→   509→          kind: "buttons",
+   510→   510→          text: t(tenant, lang, "ask_timing"),
+   511→   511→          buttons: [
+   512→   512→            { id: "slot_asap", label: "⚡ ASAP" },
+   513→   513→            { id: "slot_today_eve", label: "🌆 Today evening" },
+   514→   514→            { id: "slot_tmr", label: "📅 Tomorrow" },
+   515→   515→            { id: "slot_custom", label: "✏️ Type own" },
+   516→   516→          ],
+   517→   517→        });
+   518→   518→      }
+   519→   519→      break;
+   520→   520→    }
+   521→   521→
+   522→   522→    case "timing": {
+   523→   523→      const slotMap: Record<string, string> = {
+   524→   524→        slot_asap: "ASAP",
+   525→   525→        slot_today_eve: "Today evening",
+   526→   526→        slot_tmr: "Tomorrow morning",
+   527→   527→        slot_today_2_4: "Today 2–4pm",
+   528→   528→        slot_today_4_6: "Today 4–6pm",
+   529→   529→        slot_tmr_morn: "Tomorrow morning",
+   530→   530→      };
+   531→   531→      if (button && slotMap[button]) {
+   532→   532→        await db.botSession.update({
+   533→   533→          where: { id: session.id },
+   534→   534→          data: { draftTiming: slotMap[button], state: "address" },
+   535→   535→        });
+   536→   536→        // Offer saved addresses
+   537→   537→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   538→   538→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   539→   539→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   540→   540→        replies.push({
+   541→   541→          kind: "buttons",
+   542→   542→          text: t(tenant, lang, "ask_address"),
+   543→   543→          buttons,
+   544→   544→        });
+   545→   545→      } else if (button === "slot_custom") {
+   546→   546→        replies.push({ kind: "text", text: "Type your preferred time:" });
+   547→   547→        await db.botSession.update({ where: { id: session.id }, data: { state: "timing_text" } });
+   548→   548→      } else if (message) {
+   549→   549→        // Free text timing
+   550→   550→        await db.botSession.update({
+   551→   551→          where: { id: session.id },
+   552→   552→          data: { draftTiming: message, state: "address" },
+   553→   553→        });
+   554→   554→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   555→   555→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   556→   556→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   557→   557→        replies.push({
+   558→   558→          kind: "buttons",
+   559→   559→          text: t(tenant, lang, "ask_address"),
+   560→   560→          buttons,
+   561→   561→        });
+   562→   562→      } else {
+   563→   563→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   564→   564→      }
+   565→   565→      break;
+   566→   566→    }
+   567→   567→
+   568→   568→    case "timing_text": {
+   569→   569→      if (message) {
+   570→   570→        await db.botSession.update({
+   571→   571→          where: { id: session.id },
+   572→   572→          data: { draftTiming: message, state: "address" },
+   573→   573→        });
+   574→   574→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   575→   575→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   576→   576→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   577→   577→        replies.push({
+   578→   578→          kind: "buttons",
+   579→   579→          text: t(tenant, lang, "ask_address"),
+   580→   580→          buttons,
+   581→   581→        });
+   582→   582→      }
+   583→   583→      break;
+   584→   584→    }
+   585→   585→
+   586→   586→    case "address": {
+   587→   587→      const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   588→   588→      // Saved address tap
+   589→   589→      if (button && button.startsWith("addr_") && button !== "addr_new") {
+   590→   590→        const idx = parseInt(button.slice(5), 10);
+   591→   591→        const addr = addresses[idx];
+   592→   592→        if (addr) {
+   593→   593→          await db.botSession.update({
+   594→   594→            where: { id: session.id },
+   595→   595→            data: {
+   596→   596→              draftAddress: addr.text,
+   597→   597→              draftLat: addr.lat || null,
+   598→   598→              draftLng: addr.lng || null,
+   599→   599→              state: "confirm",
+   600→   600→            },
+   601→   601→          });
+   602→   602→          // Show confirmation summary
+   603→   603→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   604→   604→          const svc = tenant.services.find((s) => s.id === session.draftService);
+   605→   605→          const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, addr.text, addr.area, lang);
+   606→   606→          replies.push({
+   607→   607→            kind: "buttons",
+   608→   608→            text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   609→   609→            buttons: [
+   610→   610→              { id: "confirm_yes", label: "✅ Confirm" },
+   611→   611→              { id: "confirm_change", label: "✏️ Change" },
+   612→   612→              { id: "cancel", label: "❌ Cancel" },
+   613→   613→            ],
+   614→   614→          });
+   615→   615→          break;
+   616→   616→        }
+   617→   617→      }
+   618→   618→      if (button === "addr_new") {
+   619→   619→        replies.push({ kind: "text", text: t(tenant, lang, "ask_address") });
+   620→   620→        await db.botSession.update({ where: { id: session.id }, data: { state: "address_new" } });
+   621→   621→        break;
+   622→   622→      }
+   623→   623→      // Location pin received
+   624→   624→      if (location && location.lat && location.lng) {
+   625→   625→        const area = reverseGeocodeStub(location.lat, location.lng);
+   626→   626→        await db.botSession.update({
+   627→   627→          where: { id: session.id },
+   628→   628→          data: {
+   629→   629→            draftAddress: `${area} (pin shared)`,
+   630→   630→            draftLat: location.lat,
+   631→   631→            draftLng: location.lng,
+   632→   632→            state: "address_confirm",
+   633→   633→          },
+   634→   634→        });
+   635→   635→        replies.push({
+   636→   636→          kind: "buttons",
+   637→   637→          text: t(tenant, lang, "ask_address_confirm", { area }) || `Is *${area}* correct?`,
+   638→   638→          buttons: [
+   639→   639→            { id: "addr_correct", label: "✅ Correct" },
+   640→   640→            { id: "addr_type", label: "✏️ Type instead" },
+   641→   641→          ],
+   642→   642→        });
+   643→   643→        break;
+   644→   644→      }
+   645→   645→      // Typed address
+   646→   646→      if (message) {
+   647→   647→        await db.botSession.update({
+   648→   648→          where: { id: session.id },
+   649→   649→          data: { draftAddress: message, state: "confirm" },
+   650→   650→        });
+   651→   651→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   652→   652→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   653→   653→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, message, null, lang);
+   654→   654→        replies.push({
+   655→   655→          kind: "buttons",
+   656→   656→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   657→   657→          buttons: [
+   658→   658→            { id: "confirm_yes", label: "✅ Confirm" },
+   659→   659→            { id: "confirm_change", label: "✏️ Change" },
+   660→   660→            { id: "cancel", label: "❌ Cancel" },
+   661→   661→          ],
+   662→   662→        });
+   663→   663→        break;
+   664→   664→      }
+   665→   665→      replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   666→   666→      break;
+   667→   667→    }
+   668→   668→
+   669→   669→    case "address_new": {
+   670→   670→      if (location && location.lat && location.lng) {
+   671→   671→        const area = reverseGeocodeStub(location.lat, location.lng);
+   672→   672→        await db.botSession.update({
+   673→   673→          where: { id: session.id },
+   674→   674→          data: {
+   675→   675→            draftAddress: `${area} (pin shared)`,
+   676→   676→            draftLat: location.lat,
+   677→   677→            draftLng: location.lng,
+   678→   678→            state: "address_confirm",
+   679→   679→          },
+   680→   680→        });
+   681→   681→        replies.push({
+   682→   682→          kind: "buttons",
+   683→   683→          text: `Is *${area}* correct?`,
+   684→   684→          buttons: [
+   685→   685→            { id: "addr_correct", label: "✅ Correct" },
+   686→   686→            { id: "addr_type", label: "✏️ Type instead" },
+   687→   687→          ],
+   688→   688→        });
+   689→   689→        break;
+   690→   690→      }
+   691→   691→      if (message) {
+   692→   692→        await db.botSession.update({
+   693→   693→          where: { id: session.id },
+   694→   694→          data: { draftAddress: message, state: "confirm" },
+   695→   695→        });
+   696→   696→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   697→   697→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   698→   698→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, message, null, lang);
+   699→   699→        replies.push({
+   700→   700→          kind: "buttons",
+   701→   701→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   702→   702→          buttons: [
+   703→   703→            { id: "confirm_yes", label: "✅ Confirm" },
+   704→   704→            { id: "confirm_change", label: "✏️ Change" },
+   705→   705→            { id: "cancel", label: "❌ Cancel" },
+   706→   706→          ],
+   707→   707→        });
+   708→   708→        break;
+   709→   709→      }
+   710→   710→      replies.push({ kind: "text", text: t(tenant, lang, "ask_address") });
+   711→   711→      break;
+   712→   712→    }
+   713→   713→
+   714→   714→    case "address_confirm": {
+   715→   715→      if (button === "addr_correct") {
+   716→   716→        // Save address to customer
+   717→   717→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   718→   718→        const area = session.draftAddress ? session.draftAddress.split(" (")[0] : "Saved";
+   719→   719→        const newAddr = {
+   720→   720→          label: area,
+   721→   721→          text: session.draftAddress || "",
+   722→   722→          lat: session.draftLat,
+   723→   723→          lng: session.draftLng,
+   724→   724→          area,
+   725→   725→        };
+   726→   726→        const updated = [...addresses.filter((a) => a.area !== area), newAddr];
+   727→   727→        await db.customer.update({
+   728→   728→          where: { id: customer.id },
+   729→   729→          data: { addresses: JSON.stringify(updated) },
+   730→   730→        });
+   731→   731→        await db.botSession.update({ where: { id: session.id }, data: { state: "confirm" } });
+   732→   732→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   733→   733→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   734→   734→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, session.draftAddress || "", area, lang);
+   735→   735→        replies.push({
+   736→   736→          kind: "buttons",
+   737→   737→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   738→   738→          buttons: [
+   739→   739→            { id: "confirm_yes", label: "✅ Confirm" },
+   740→   740→            { id: "confirm_change", label: "✏️ Change" },
+   741→   741→            { id: "cancel", label: "❌ Cancel" },
+   742→   742→          ],
+   743→   743→        });
+   744→   744→        break;
+   745→   745→      }
+   746→   746→      if (button === "addr_type") {
+   747→   747→        replies.push({ kind: "text", text: "Type your address with landmark:" });
+   748→   748→        await db.botSession.update({ where: { id: session.id }, data: { state: "address_new" } });
+   749→   749→        break;
+   750→   750→      }
+   751→   751→      break;
+   752→   752→    }
+   753→   753→
+   754→   754→    case "confirm": {
+   755→   755→      if (button === "confirm_yes") {
+   756→   756→        // ── PLACE ORDER ──────────────────────────────────
+   757→   757→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   758→   758→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   759→   759→        const lastOrder = await db.order.findFirst({
+   760→   760→          where: { tenantId: tenant.id },
+   761→   761→          orderBy: { code: "desc" },
+   762→   762→        });
+   763→   763→        const code = lastOrder ? String(parseInt(lastOrder.code, 10) + 1) : "1001";
+   764→   764→        const cityId = tenant.cities[0]?.id;
+   765→   765→        if (!cityId) {
+   766→   766→          replies.push({ kind: "text", text: "Sorry, no active city. Please contact support." });
+   767→   767→          break;
+   768→   768→        }
+   769→   769→        const order = await db.order.create({
+   770→   770→          data: {
+   771→   771→            tenantId: tenant.id,
+   772→   772→            cityId,
+   773→   773→            customerId: customer.id,
+   774→   774→            serviceId: svc?.id || null,
+   775→   775→            code,
+   776→   776→            status: "new",
+   777→   777→            kind: svc?.kind || "order",
+   778→   778→            items: JSON.stringify(items),
+   779→   779→            description: items[0]?.name || null,
+   780→   780→            preferredShop: session.draftShop,
+   781→   781→            timing: session.draftTiming,
+   782→   782→            addressText: session.draftAddress,
+   783→   783→            addressArea: session.draftAddress ? session.draftAddress.split(" (")[0] : null,
+   784→   784→            addressLat: session.draftLat,
+   785→   785→            addressLng: session.draftLng,
+   786→   786→            source: "bot",
+   787→   787→            activity: {
+   788→   788→              create: [
+   789→   789→                { tenantId: tenant.id, actor: "bot", action: "created", detail: "Order created via WhatsApp" },
+   790→   790→              ],
+   791→   791→            },
+   792→   792→          },
+   793→   793→        });
+   794→   794→        // Broadcast to matching providers
+   795→   795→        const matchingProviders = await db.provider.findMany({
+   796→   796→          where: {
+   797→   797→            tenantId: tenant.id,
+   798→   798→            cityId,
+   799→   799→            isOnline: true,
+   800→   800→            isActive: true,
+   801→   801→          },
+   802→   802→        });
+   803→   803→        const toBroadcast = svc
+   804→   804→          ? matchingProviders.filter((p) => {
+   805→   805→              const sids = safeParse<string[]>(p.serviceIds, []);
+   806→   806→              return sids.length === 0 || sids.includes(svc.id);
+   807→   807→            })
+   808→   808→          : matchingProviders;
+   809→   809→
+   810→   810→        if (toBroadcast.length > 0) {
+   811→   811→          await db.order.update({ where: { id: order.id }, data: { status: "broadcast" } });
+   812→   812→          await db.orderBroadcast.createMany({
+   813→   813→            data: toBroadcast.map((p) => ({ orderId: order.id, providerId: p.id, status: "pending" })),
+   814→   814→          });
+   815→   815→          await db.activity.create({
+   816→   816→            data: {
+   817→   817→              tenantId: tenant.id, orderId: order.id,
+   818→   818→              actor: "system", action: "broadcast",
+   819→   819→              detail: `Broadcast to ${toBroadcast.length} provider(s)`,
+   820→   820→            },
+   821→   821→          });
+   822→   822→        }
+   823→   823→
+   824→   824→        await db.botSession.update({
+   825→   825→          where: { id: session.id },
+   826→   826→          data: {
+   827→   827→            state: "done",
+   828→   828→            draftService: null,
+   829→   829→            draftItems: "[]",
+   830→   830→            draftShop: null,
+   831→   831→            draftTiming: null,
+   832→   832→            draftAddress: null,
+   833→   833→            draftLat: null,
+   834→   834→            draftLng: null,
+   835→   835→          },
+   836→   836→        });
+   837→   837→        replies.push({ kind: "text", text: t(tenant, lang, "placed", { code }) });
+   838→   838→        // Show menu again
+   839→   839→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   840→   840→        replies.push({
+   841→   841→          kind: "list",
+   842→   842→          text: t(tenant, lang, "menu_title"),
+   843→   843→          listTitle: t(tenant, lang, "menu_title"),
+   844→   844→          listButton: t(tenant, lang, "menu_button"),
+   845→   845→          sections: [{ title: "Services", rows: menuRows }],
+   846→   846→        });
+   847→   847→        return NextResponse.json({ replies, session: { state: "done" }, order });
+   848→   848→      }
+   849→   849→      if (button === "confirm_change") {
+   850→   850→        // Restart from service
+   851→   851→        await db.botSession.update({
+   852→   852→          where: { id: session.id },
+   853→   853→          data: { state: "service_draft", draftItems: "[]" },
+   854→   854→        });
+   855→   855→        replies.push({ kind: "text", text: "Let's start over. Tell us what you need:" });
+   856→   856→        break;
+   857→   857→      }
+   858→   858→      if (button === "cancel") {
+   859→   859→        await db.botSession.update({
+   860→   860→          where: { id: session.id },
+   861→   861→          data: { state: "menu", draftService: null, draftItems: "[]" },
+   862→   862→        });
+   863→   863→        replies.push({ kind: "text", text: t(tenant, lang, "cancelled") });
+   864→   864→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   865→   865→        replies.push({
+   866→   866→          kind: "list",
+   867→   867→          text: t(tenant, lang, "menu_title"),
+   868→   868→          listTitle: t(tenant, lang, "menu_title"),
+   869→   869→          listButton: t(tenant, lang, "menu_button"),
+   870→   870→          sections: [{ title: "Services", rows: menuRows }],
+   871→   871→        });
+   872→   872→      }
+   873→   873→      break;
+   874→   874→    }
+   875→   875→
+   876→   876→    case "done":
+   877→   877→    default: {
+   878→   878→      // Show menu
+   879→   879→      const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   880→   880→      await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   881→   881→      replies.push({
+   882→   882→        kind: "list",
+   883→   883→        text: t(tenant, lang, "menu_title"),
+   884→   884→        listTitle: t(tenant, lang, "menu_title"),
+   885→   885→        listButton: t(tenant, lang, "menu_button"),
+   886→   886→        sections: [{ title: "Services", rows: menuRows }],
+   887→   887→      });
+   888→   888→      break;
+   889→   889→    }
+   890→   890→  }
+   891→   891→
+   892→   892→  // Update session lastMessageAt
+   893→   893→  await db.botSession.update({
+   894→   894→    where: { id: session.id },
+   895→   895→    data: { lastMessageAt: new Date() },
+   896→   896→  });
+   897→   897→
+   898→   898→  return NextResponse.json({ replies, session: { state: session.state } });
+   899→   899→}
+   900→   900→
+   901→   901→function buildOrderSummary(
+   902→   902→  svc: { icon: string; key: string; labels: string } | undefined,
+   903→   903→  items: Array<{ name: string; qty?: string | number }>,
+   904→   904→  shop: string | null,
+   905→   905→  timing: string | null,
+   906→   906→  address: string,
+   907→   907→  area: string | null,
+   908→   908→  lang: "en" | "hi"
+   909→   909→): string {
+   910→   910→  const labels = svc ? safeParse<Record<string, string>>(svc.labels, {}) : {};
+   911→   911→  const svcName = svc ? `${svc.icon} ${labels[lang] || labels.en || svc.key}` : "Order";
+   912→   912→  const lines = [
+   913→   913→    `*${svcName}*`,
+   914→   914→    "",
+   915→   915→    "🛍️ Items:",
+   916→   916→    ...items.map((it, i) => `  ${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`),
+   917→   917→  ];
+   918→   918→  if (shop) lines.push("", `🏪 Shop: ${shop}`);
+   919→   919→  if (timing) lines.push(`⏰ Timing: ${timing}`);
+   920→   920→  lines.push("", `📍 Address:`, `  ${address}`);
+   921→   921→  if (area) lines.push(`  Area: ${area}`);
+   922→   922→  return lines.join("\n");
+   923→   923→}
+   924→   924→

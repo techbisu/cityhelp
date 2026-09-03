@@ -349,20 +349,51 @@ export async function POST(req: NextRequest) {
         }
         if (button === "grocery_more" || message || mediaType) {
           const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
-          // If media, simulate AI extraction
+          // ── Voice note: transcribe via AI, then extract items ──
           if (mediaType === "voice") {
             replies.push({ kind: "text", text: t(tenant, lang, "voice_received") });
-            // Simulated extraction
-            const fakeItems = [
-              { name: "Rice 5kg", qty: 1 },
-              { name: "Cooking Oil 1L", qty: 2 },
-              { name: "Sugar 1kg", qty: 1 },
-            ];
-            const merged = [...items, ...fakeItems];
-            await db.botSession.update({
-              where: { id: session.id },
-              data: { draftItems: JSON.stringify(merged) },
-            });
+            // Try AI transcription + extraction
+            const { runAiTask, runPlatformAiFallback } = await import("@/lib/ai");
+            let transcribedText = "";
+            const voiceResult = await runAiTask<string>(tenant.id, "transcribe_voice", { audioUrl: body.audioUrl });
+            if (voiceResult.ok && voiceResult.data) {
+              transcribedText = voiceResult.data;
+            } else {
+              // Try platform fallback
+              const fallback = await runPlatformAiFallback<string>("transcribe_voice", { text: message || "" });
+              if (fallback.ok && fallback.data) transcribedText = fallback.data;
+            }
+            if (!transcribedText) {
+              // Graceful degrade → save as custom order
+              replies.push({ kind: "text", text: t(tenant, lang, "voice_failed") });
+              // Save raw voice as custom order
+              const lastOrder = await db.order.findFirst({ where: { tenantId: tenant.id }, orderBy: { code: "desc" } });
+              const code = lastOrder ? String(parseInt(lastOrder.code, 10) + 1) : "1001";
+              await db.order.create({
+                data: {
+                  tenantId: tenant.id,
+                  cityId: tenant.cities[0]?.id || "",
+                  customerId: customer.id,
+                  code,
+                  status: "new",
+                  kind: "custom",
+                  description: `[voice note — transcription failed]`,
+                  timing: "ASAP",
+                  source: "bot",
+                  activity: { create: [{ tenantId: tenant.id, actor: "bot", action: "created", detail: "Voice note — AI transcription failed, saved for human" }] },
+                },
+              });
+              break;
+            }
+            // Extract items from the transcription
+            const extractResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "extract_grocery", { text: transcribedText });
+            const newItems = extractResult.ok && extractResult.data && Array.isArray(extractResult.data) ? extractResult.data : [];
+            if (newItems.length === 0) {
+              replies.push({ kind: "text", text: `Transcribed: "${transcribedText}". Couldn't extract items — please type your list.` });
+              break;
+            }
+            const merged = [...items, ...newItems];
+            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged), voiceTranscript: transcribedText } });
             const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
             replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
               { id: "grocery_done", label: "✅ Done" },
@@ -371,18 +402,25 @@ export async function POST(req: NextRequest) {
             ]});
             break;
           }
+          // ── Photo: OCR via AI, then extract items ──
           if (mediaType === "image") {
             replies.push({ kind: "text", text: t(tenant, lang, "photo_received") });
-            const fakeItems = [
-              { name: "Atta 10kg", qty: 1 },
-              { name: "Tea 250g", qty: 1 },
-              { name: "Biscuits", qty: 3 },
-            ];
-            const merged = [...items, ...fakeItems];
-            await db.botSession.update({
-              where: { id: session.id },
-              data: { draftItems: JSON.stringify(merged) },
-            });
+            const { runAiTask, runPlatformAiFallback } = await import("@/lib/ai");
+            const photoResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "read_photo", { imageUrl: body.mediaUrl || "" });
+            const newItems = photoResult.ok && photoResult.data && Array.isArray(photoResult.data) ? photoResult.data : [];
+            if (newItems.length === 0) {
+              // Try platform fallback
+              const fallback = await runPlatformAiFallback<Array<{ name: string; qty?: string | number }>>("read_photo", { text: message || "" });
+              if (fallback.ok && Array.isArray(fallback.data)) {
+                newItems.push(...fallback.data);
+              }
+            }
+            if (newItems.length === 0) {
+              replies.push({ kind: "text", text: t(tenant, lang, "photo_failed") });
+              break;
+            }
+            const merged = [...items, ...newItems];
+            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged) } });
             const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
             replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
               { id: "grocery_done", label: "✅ Done" },
@@ -391,14 +429,23 @@ export async function POST(req: NextRequest) {
             ]});
             break;
           }
-          // Parse typed items (split by newlines or commas)
+          // ── Typed items: try AI extraction first, fall back to regex ──
           if (message) {
-            const lines = message.split(/\n|,|;/).map((l) => l.trim()).filter(Boolean);
-            const newItems = lines.map((l) => {
-              const m = l.match(/^(\d+\.?\d*)\s*(?:x|×|kg|g|l|ltr|pcs|piece|pkt|pack)?\s*(.*)/i);
-              if (m && m[2]) return { name: m[2], qty: m[1] };
-              return { name: l, qty: 1 };
-            });
+            // Try AI extraction for lenient parsing
+            const { runAiTask } = await import("@/lib/ai");
+            const aiResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "extract_grocery", { text: message });
+            let newItems: Array<{ name: string; qty?: string | number }> = [];
+            if (aiResult.ok && aiResult.data && Array.isArray(aiResult.data) && aiResult.data.length > 0) {
+              newItems = aiResult.data;
+            } else {
+              // Fallback: simple regex parsing
+              const lines = message.split(/\n|,|;/).map((l) => l.trim()).filter(Boolean);
+              newItems = lines.map((l) => {
+                const m = l.match(/^(\d+\.?\d*)\s*(?:x|×|kg|g|l|ltr|pcs|piece|pkt|pack)?\s*(.*)/i);
+                if (m && m[2]) return { name: m[2], qty: m[1] };
+                return { name: l, qty: 1 };
+              });
+            }
             const merged = [...items, ...newItems];
             await db.botSession.update({
               where: { id: session.id },

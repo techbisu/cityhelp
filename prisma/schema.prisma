@@ -57,6 +57,14 @@ model Tenant {
   waVerified      Boolean  @default(false)
   // email
   resendApiKeyMask String? // last 4 only
+  // billing
+  razorpayCustomerId String?
+  razorpaySubscriptionId String?
+  billingEmail    String?
+  currentPeriodEnd DateTime?
+  dunningStartedAt DateTime?
+  // onboarding
+  onboardingStep  String   @default("business") // business | city | whatsapp | ai | done
   // timestamps
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -73,6 +81,7 @@ model Tenant {
   notifications   NotificationSetting?
   activity        Activity[]
   botSessions     BotSession[]
+  invoices        Invoice[]
 }
 
 model City {
@@ -390,4 +399,27 @@ model NotificationSetting {
   weeklyReport    Boolean  @default(false)
   limitWarning    Boolean  @default(true)
   updatedAt       DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────
+// BILLING / INVOICES
+// ─────────────────────────────────────────────────────────────
+
+model Invoice {
+  id              String   @id @default(cuid())
+  tenantId        String
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invoiceNumber   String   @unique
+  razorpayOrderId String?
+  razorpayPaymentId String?
+  razorpaySubscriptionId String?
+  amount          Int      // paise
+  currency        String   @default("INR")
+  planName        String
+  periodStart     DateTime
+  periodEnd       DateTime
+  status          String   @default("pending") // pending | paid | failed | refunded
+  paymentMethod   String?  // card | upi | netbanking | cash
+  paidAt          DateTime?
+  createdAt       DateTime @default(now())
 }
