@@ -93,6 +93,22 @@ model Tenant {
   botSessions     BotSession[]
   invoices        Invoice[]
   reviews         Review[]
+  waMessages      WaMessage[]
+}
+
+// ─────────────────────────────────────────────────────────────
+// WHATSAPP MESSAGE DEDUP
+// ─────────────────────────────────────────────────────────────
+
+model WaMessage {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  waMessageId String   @unique // WhatsApp's message ID — dedup key
+  phone       String
+  processedAt DateTime @default(now())
+
+  @@index([tenantId, phone])
 }
 
 model City {
@@ -201,6 +217,8 @@ model Review {
   googleReviewClicked Boolean @default(false)
   createdAt   DateTime @default(now())
   @@unique([orderId])
+  @@index([providerId, tenantId])
+  @@index([tenantId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -321,6 +339,10 @@ model Order {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   @@unique([tenantId, code])
+  @@index([tenantId, status, createdAt])
+  @@index([tenantId, cityId, status])
+  @@index([acceptedById, status])
+  @@index([tenantId, createdAt])
 }
 
 model OrderBroadcast {
@@ -387,6 +409,7 @@ model AiUsageLog {
   success       Boolean  @default(true)
   error         String?
   createdAt     DateTime @default(now())
+  @@index([tenantId, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -414,6 +437,7 @@ model BotSession {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   @@unique([tenantId, phone])
+  @@index([tenantId, lastMessageAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -432,6 +456,8 @@ model Activity {
   action      String   // created | broadcast | accepted | rejected | timeout | picked | delivered | escalated | assigned | cancelled | quoted | quote_accepted
   detail      String?
   createdAt   DateTime @default(now())
+  @@index([tenantId, orderId, createdAt])
+  @@index([tenantId, createdAt])
 }
 
 model AuditLog {
@@ -447,6 +473,8 @@ model AuditLog {
   detail      String?
   ipAddress   String?
   createdAt   DateTime @default(now())
+  @@index([tenantId, createdAt])
+  @@index([action, createdAt])
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -486,4 +514,6 @@ model Invoice {
   paymentMethod   String?  // card | upi | netbanking | cash
   paidAt          DateTime?
   createdAt       DateTime @default(now())
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
 }

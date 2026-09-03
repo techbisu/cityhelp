@@ -10,6 +10,7 @@ import {
   Globe, MessageSquare, CheckCircle2, AlertCircle, Loader2, GripVertical, ArrowRight, CreditCard,
 } from "lucide-react";
 import { toast } from "sonner";
+import { OnboardingWizard } from "@/components/admin/OnboardingWizard";
 import {
   DndContext, type DragEndEvent, useDraggable, useDroppable, PointerSensor, useSensor, useSensors,
 } from "@dnd-kit/core";
@@ -233,6 +234,7 @@ export function AdminApp() {
 
         <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
           <NavItem icon={LayoutDashboard} label="Dashboard" active={page === "dashboard"} onClick={() => setPage("dashboard")} />
+          <NavItem icon={Sparkles} label="Setup wizard" active={page === "onboarding"} onClick={() => setPage("onboarding")} />
           <NavItem icon={Package} label="Orders" active={page === "orders"} onClick={() => setPage("orders")} />
           <NavItem icon={AlertTriangle} label="Escalation" active={page === "escalation"} onClick={() => setPage("escalation")} badge={stats?.cards.escalatedOrders} badgeColor="rose" />
           <NavItem icon={Users} label="Providers" active={page === "providers"} onClick={() => setPage("providers")} />
@@ -347,6 +349,9 @@ export function AdminApp() {
           {page === "payments" && <PaymentsPage slug={effectiveSlug} />}
           {page === "team" && <TeamPage slug={effectiveSlug} staffEmail={adminStaffEmail} />}
           {page === "notifications" && <NotificationsPage slug={effectiveSlug} />}
+          {page === "onboarding" && effectiveSlug && (
+            <OnboardingWizard slug={effectiveSlug} onComplete={() => setPage("dashboard")} />
+          )}
         </main>
       </div>
 

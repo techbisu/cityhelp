@@ -107,6 +107,29 @@ function t(tenant: { waBusinessName: string | null }, lang: "en" | "hi", key: st
   return s;
 }
 
+/** Merge grocery items by normalized name — sums quantities for duplicates (H9 fix) */
+function mergeItems(existing: Array<{ name: string; qty?: string | number }>, newItems: Array<{ name: string; qty?: string | number }>): Array<{ name: string; qty?: string | number }> {
+  const map = new Map<string, { name: string; qty?: string | number }>();
+  for (const it of [...existing, ...newItems]) {
+    const key = it.name.toLowerCase().trim();
+    const existingEntry = map.get(key);
+    if (existingEntry) {
+      // Try to sum quantities if both are numeric
+      const existingQty = parseFloat(String(existingEntry.qty || "0"));
+      const newQty = parseFloat(String(it.qty || "0"));
+      if (!isNaN(existingQty) && !isNaN(newQty)) {
+        existingEntry.qty = existingQty + newQty;
+      } else {
+        // Can't sum — keep the newer one
+        existingEntry.qty = it.qty || existingEntry.qty;
+      }
+    } else {
+      map.set(key, { ...it });
+    }
+  }
+  return Array.from(map.values());
+}
+
 function buildMenuList(tenantId: string, services: Array<{ id: string; key: string; kind: string; icon: string; labels: string }>, lang: "en" | "hi") {
   const rows = services
     .filter((s) => s.kind !== "custom" || s.key === "custom")
@@ -180,11 +203,8 @@ export async function POST(req: NextRequest) {
   if (button && button.startsWith("charges_agree_")) {
     const orderId = button.slice("charges_agree_".length);
     try {
-      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agreed: true, tenantSlug }),
-      });
+      const { agreeToCharges } = await import("@/lib/order-actions");
+      await agreeToCharges(orderId, tenant.id);
       replies.push({ kind: "text", text: "✅ Charges agreed. The provider will send a payment link shortly." });
     } catch {
       replies.push({ kind: "text", text: "Something went wrong. Please try again." });
@@ -194,11 +214,8 @@ export async function POST(req: NextRequest) {
   if (button && button.startsWith("charges_cancel_")) {
     const orderId = button.slice("charges_cancel_".length);
     try {
-      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agreed: false, tenantSlug }),
-      });
+      const { declineCharges } = await import("@/lib/order-actions");
+      await declineCharges(orderId, tenant.id);
       replies.push({ kind: "text", text: "❌ Order cancelled. Type *menu* to start a new order." });
     } catch {
       replies.push({ kind: "text", text: "Something went wrong." });
@@ -213,15 +230,11 @@ export async function POST(req: NextRequest) {
       const rating = parseInt(match[1], 10);
       const orderId = match[2];
       try {
-        const res = await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/review`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rating, tenantSlug }),
-        });
-        const data = await res.json();
-        if (res.ok) {
-          replies.push({ kind: "text", text: `🙏 Thank you for your ${rating}★ rating!${data.googleReviewUrl ? "\n\nWe've also sent you a link to review us on Google — it really helps!" : ""}` });
-        } else if (data.error === "review_already_submitted") {
+        const { submitReview } = await import("@/lib/order-actions");
+        const result = await submitReview(orderId, tenant.id, rating);
+        if (result.ok) {
+          replies.push({ kind: "text", text: `🙏 Thank you for your ${rating}★ rating!${result.googleReviewUrl ? "\n\nWe've also sent you a link to review us on Google — it really helps!" : ""}` });
+        } else if (result.error === "already_submitted") {
           replies.push({ kind: "text", text: "You've already rated this order. Thank you! 🙏" });
         } else {
           replies.push({ kind: "text", text: "Thanks for your feedback! 🙏" });
@@ -231,6 +244,34 @@ export async function POST(req: NextRequest) {
       }
       return NextResponse.json({ replies, session: { state: session.state } });
     }
+  }
+
+  // ── Handle quote accept/decline buttons ──
+  if (button && button.startsWith("quote_accept_")) {
+    const orderId = button.slice("quote_accept_".length);
+    try {
+      const { acceptQuote } = await import("@/lib/order-actions");
+      const result = await acceptQuote(orderId, tenant.id);
+      if (result.ok) {
+        replies.push({ kind: "text", text: "✅ Quote accepted! Your order is confirmed. The provider will reach out shortly." });
+      } else {
+        replies.push({ kind: "text", text: "This quote is no longer valid. Type *menu* to start a new order." });
+      }
+    } catch {
+      replies.push({ kind: "text", text: "Something went wrong." });
+    }
+    return NextResponse.json({ replies, session: { state: session.state } });
+  }
+  if (button && button.startsWith("quote_decline_")) {
+    const orderId = button.slice("quote_decline_".length);
+    try {
+      const { declineQuote } = await import("@/lib/order-actions");
+      await declineQuote(orderId, tenant.id);
+      replies.push({ kind: "text", text: "❌ Quote declined. Type *menu* to start a new order." });
+    } catch {
+      replies.push({ kind: "text", text: "Something went wrong." });
+    }
+    return NextResponse.json({ replies, session: { state: session.state } });
   }
 
   // ── Handle "cancel" / "menu" anywhere ────────────────────
@@ -264,9 +305,19 @@ export async function POST(req: NextRequest) {
   }
 
   if (text === "menu" || text === "start" || text === "hi" || text === "hello") {
+    // Reset ALL draft fields (H10 fix — was only resetting draftService + draftItems)
     await db.botSession.update({
       where: { id: session.id },
-      data: { state: "menu", draftService: null, draftItems: "[]" },
+      data: {
+        state: "menu",
+        draftService: null,
+        draftItems: "[]",
+        draftTiming: null,
+        draftShop: null,
+        draftAddress: null,
+        draftLat: null,
+        draftLng: null,
+      },
     });
     const menuRows = buildMenuList(tenant.id, tenant.services, lang);
     replies.push({
@@ -449,7 +500,7 @@ export async function POST(req: NextRequest) {
               replies.push({ kind: "text", text: `Transcribed: "${transcribedText}". Couldn't extract items — please type your list.` });
               break;
             }
-            const merged = [...items, ...newItems];
+            const merged = mergeItems(items, newItems);
             await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged), voiceTranscript: transcribedText } });
             const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
             replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
@@ -476,7 +527,7 @@ export async function POST(req: NextRequest) {
               replies.push({ kind: "text", text: t(tenant, lang, "photo_failed") });
               break;
             }
-            const merged = [...items, ...newItems];
+            const merged = mergeItems(items, newItems);
             await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged) } });
             const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
             replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
@@ -503,7 +554,7 @@ export async function POST(req: NextRequest) {
                 return { name: l, qty: 1 };
               });
             }
-            const merged = [...items, ...newItems];
+            const merged = mergeItems(items, newItems);
             await db.botSession.update({
               where: { id: session.id },
               data: { draftItems: JSON.stringify(merged) },

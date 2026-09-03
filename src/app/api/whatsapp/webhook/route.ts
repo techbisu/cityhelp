@@ -120,12 +120,18 @@ export async function POST(req: NextRequest) {
         const msgId = msg.id;
         if (!msgId) continue;
 
-        // ── DEDUP: check if we already processed this message ID ──
-        const existing = await db.botSession.findFirst({
-          where: { waMessageId: msgId },
-          select: { id: true },
-        });
-        if (existing) {
+        // ── DEDUP: try to insert into WaMessage table (unique on waMessageId) ──
+        // If it already exists, this is a duplicate delivery — skip.
+        try {
+          await db.waMessage.create({
+            data: {
+              tenantId: tenant.id,
+              waMessageId: msgId,
+              phone: msg.from || "unknown",
+            },
+          });
+        } catch {
+          // P2002 = unique constraint violation = duplicate message
           results.push({ ok: true, message: "duplicate_ignored" });
           continue;
         }
@@ -133,18 +139,18 @@ export async function POST(req: NextRequest) {
         const phone = msg.from;
         if (!phone) continue;
 
-        // Mark this message ID as seen (upsert session)
+        // Upsert session (no longer storing waMessageId here — dedup is in WaMessage table)
         let session = await db.botSession.findUnique({
           where: { tenantId_phone: { tenantId: tenant.id, phone } },
         });
         if (!session) {
           session = await db.botSession.create({
-            data: { tenantId: tenant.id, phone, waMessageId: msgId },
+            data: { tenantId: tenant.id, phone },
           });
         } else {
           await db.botSession.update({
             where: { id: session.id },
-            data: { waMessageId: msgId, lastMessageAt: new Date() },
+            data: { lastMessageAt: new Date() },
           });
         }
 
