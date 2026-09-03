@@ -60,6 +60,8 @@ model Tenant {
   // branding
   accentColor     String   @default("#10b981") // emerald
   logoUrl         String?
+  customDomain    String?  // e.g., "orders.shantiexpress.in" — Pro plan feature
+  customDomainVerified Boolean @default(false)
   // whatsapp — PER-TENANT credentials (each business connects their own number)
   waPhoneNumberId   String?  // their WhatsApp phone number ID
   waBusinessName    String?

@@ -21,6 +21,16 @@ export const metadata: Metadata = {
     "Multi-tenant SaaS platform. Any local delivery/service business can offer WhatsApp-based ordering & booking across multiple cities, with a provider app and a premium admin dashboard.",
   keywords: ["WhatsApp", "ordering", "delivery", "multi-tenant", "SaaS", "Next.js"],
   authors: [{ name: "CityHelp" }],
+  manifest: "/api/manifest",
+  icons: {
+    icon: "/logo.svg",
+    apple: "/logo.svg",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "CityHelp",
+  },
 };
 
 export const viewport: Viewport = {

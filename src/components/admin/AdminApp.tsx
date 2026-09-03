@@ -7,7 +7,7 @@ import {
   ArrowLeft, LayoutDashboard, Package, AlertTriangle, Users, User, Settings, Bot, Building2, Bell,
   Search, Plus, TrendingUp, Clock, Phone, MapPin, ChevronDown, X, Sparkles, Zap, Activity,
   Filter, Check, Ban, MoreVertical, Pencil, Trash2, Power, Star, Shield, Key, Eye, EyeOff,
-  Globe, MessageSquare, CheckCircle2, AlertCircle, Loader2, GripVertical, ArrowRight, CreditCard,
+  Globe, MessageSquare, CheckCircle2, AlertCircle, Loader2, GripVertical, ArrowRight, CreditCard, Palette,
 } from "lucide-react";
 import { toast } from "sonner";
 import { OnboardingWizard } from "@/components/admin/OnboardingWizard";
@@ -129,7 +129,7 @@ export function AdminApp() {
   const isImpersonating = useApp((s) => s.isImpersonating);
   const setImpersonation = useApp((s) => s.setImpersonation);
 
-  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "billing" | "payments" | "team" | "notifications" | "onboarding">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "billing" | "payments" | "team" | "branding" | "notifications" | "onboarding">("dashboard");
   const [tenant, setTenant] = useState<{ name: string; slug: string; accentColor: string; waBusinessName: string | null; waVerified: boolean } | null>(null);
   const [cities, setCities] = useState<CityT[]>([]);
   const [orders, setOrders] = useState<Job[]>([]);
@@ -248,6 +248,7 @@ export function AdminApp() {
             <NavItem icon={CreditCard} label="Billing" active={page === "billing"} onClick={() => setPage("billing")} />
             <NavItem icon={CreditCard} label="Payments" active={page === "payments"} onClick={() => setPage("payments")} />
             <NavItem icon={Users} label="Team" active={page === "team"} onClick={() => setPage("team")} />
+            <NavItem icon={Palette} label="Branding" active={page === "branding"} onClick={() => setPage("branding")} />
             <NavItem icon={Bell} label="Notifications" active={page === "notifications"} onClick={() => setPage("notifications")} />
           </div>
         </nav>
@@ -348,6 +349,7 @@ export function AdminApp() {
           {page === "billing" && <BillingPage slug={effectiveSlug} />}
           {page === "payments" && <PaymentsPage slug={effectiveSlug} />}
           {page === "team" && <TeamPage slug={effectiveSlug} staffEmail={adminStaffEmail} />}
+          {page === "branding" && <BrandingPage slug={effectiveSlug} />}
           {page === "notifications" && <NotificationsPage slug={effectiveSlug} />}
           {page === "onboarding" && effectiveSlug && (
             <OnboardingWizard slug={effectiveSlug} onComplete={() => setPage("dashboard")} />
@@ -2961,6 +2963,198 @@ function CheckoutModal({ planId, slug, onClose, onDone }: { planId: string; slug
         )}
         <button onClick={onClose} className="w-full mt-2 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Branding page — logo, accent color, custom domain
+// ─────────────────────────────────────────────────────────────
+
+function BrandingPage({ slug }: { slug: string }) {
+  const [branding, setBranding] = useState<{
+    name: string;
+    accentColor: string;
+    logoUrl: string | null;
+    customDomain: string | null;
+    customDomainVerified: boolean;
+    plan: { featureCustomDomain: boolean; name: string };
+  } | null>(null);
+  const [logoUrl, setLogoUrl] = useState("");
+  const [accentColor, setAccentColor] = useState("#10b981");
+  const [customDomain, setCustomDomain] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    // Fetch tenant ID from slug, then fetch branding
+    fetch("/api/tenants")
+      .then((r) => r.json())
+      .then((d) => {
+        const t = d.tenants?.find((x: { slug: string }) => x.slug === slug);
+        if (t) {
+          fetch(`/api/tenants/${t.id}/branding`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data.branding) {
+                setBranding(data.branding);
+                setLogoUrl(data.branding.logoUrl || "");
+                setAccentColor(data.branding.accentColor || "#10b981");
+                setCustomDomain(data.branding.customDomain || "");
+              }
+            });
+        }
+      });
+  }, [slug]);
+
+  async function handleSave() {
+    setSaving(true);
+    // Find tenant ID
+    const tenantsRes = await fetch("/api/tenants").then((r) => r.json());
+    const t = tenantsRes.tenants?.find((x: { slug: string }) => x.slug === slug);
+    if (!t) { setSaving(false); return; }
+
+    const res = await fetch(`/api/tenants/${t.id}/branding`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ logoUrl, accentColor, customDomain: customDomain || null }),
+    });
+    if (res.ok) {
+      toast.success("Branding updated");
+      const d = await res.json();
+      setBranding(d.tenant);
+    } else {
+      const d = await res.json();
+      toast.error(d.message || d.error || "Failed to save");
+    }
+    setSaving(false);
+  }
+
+  const accentColors = [
+    { name: "Emerald", value: "#10b981" },
+    { name: "Blue", value: "#3b82f6" },
+    { name: "Purple", value: "#8b5cf6" },
+    { name: "Rose", value: "#f43f5e" },
+    { name: "Amber", value: "#f59e0b" },
+    { name: "Cyan", value: "#06b6d4" },
+    { name: "Indigo", value: "#6366f1" },
+    { name: "Orange", value: "#f97316" },
+  ];
+
+  return (
+    <div className="p-4 space-y-4 max-w-2xl">
+      {/* Logo */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <p className="text-sm font-medium mb-1">Business logo</p>
+        <p className="text-xs text-muted-foreground mb-3">Used in the PWA app icon, admin sidebar, and provider app header. Upload to Cloudinary/imgur and paste the URL.</p>
+        <div className="flex items-center gap-3">
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center text-lg font-bold flex-shrink-0"
+            style={{ backgroundColor: `${accentColor}20`, color: accentColor, border: `1px solid ${accentColor}30` }}
+          >
+            {branding?.name?.charAt(0) || "C"}
+          </div>
+          <input
+            value={logoUrl}
+            onChange={(e) => setLogoUrl(e.target.value)}
+            placeholder="https://res.cloudinary.com/.../logo.png"
+            className={cn(inputCls, "flex-1 font-mono text-xs")}
+          />
+        </div>
+        <p className="text-[10px] text-muted-foreground mt-2">Recommended: 512×512px PNG with transparent background</p>
+      </div>
+
+      {/* Accent color */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <p className="text-sm font-medium mb-1">Accent color</p>
+        <p className="text-xs text-muted-foreground mb-3">Used for buttons, active states, the PWA theme color, and the ring screen glow.</p>
+        <div className="flex flex-wrap gap-2">
+          {accentColors.map((c) => (
+            <button
+              key={c.value}
+              onClick={() => setAccentColor(c.value)}
+              className={cn(
+                "w-10 h-10 rounded-lg border-2 transition-all",
+                accentColor === c.value ? "border-foreground scale-110" : "border-transparent"
+              )}
+              style={{ backgroundColor: c.value }}
+              title={c.name}
+            />
+          ))}
+          <div className="flex items-center gap-1.5 ml-2">
+            <input
+              type="color"
+              value={accentColor}
+              onChange={(e) => setAccentColor(e.target.value)}
+              className="w-10 h-10 rounded-lg cursor-pointer border border-border"
+            />
+            <input
+              value={accentColor}
+              onChange={(e) => setAccentColor(e.target.value)}
+              className="font-mono text-xs bg-background border border-border rounded-lg px-2 py-1.5 w-24 outline-none"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Custom domain */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-sm font-medium">Custom domain</p>
+          {branding?.plan?.featureCustomDomain ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">Pro plan</span>
+          ) : (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-500/15 text-zinc-400">Upgrade to Pro</span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          Use your own domain (e.g., orders.shantiexpress.in). Customers and providers access the app from your domain with your branding.
+        </p>
+        <input
+          value={customDomain}
+          onChange={(e) => setCustomDomain(e.target.value)}
+          placeholder="orders.shantiexpress.in"
+          disabled={!branding?.plan?.featureCustomDomain}
+          className={cn(inputCls, "font-mono text-xs", !branding?.plan?.featureCustomDomain && "opacity-50 cursor-not-allowed")}
+        />
+        {customDomain && branding?.plan?.featureCustomDomain && (
+          <div className="mt-3 p-3 rounded-lg bg-background text-xs space-y-1">
+            <p className="font-medium text-foreground">DNS setup:</p>
+            <p className="text-muted-foreground">1. Add a CNAME record: <code className="text-emerald-300">{customDomain}</code> → <code className="text-emerald-300">cname.cityhelp.app</code></p>
+            <p className="text-muted-foreground">2. Wait for DNS propagation (5-30 minutes)</p>
+            <p className="text-muted-foreground">3. Click save — we'll verify the DNS automatically</p>
+            {branding?.customDomainVerified ? (
+              <p className="text-emerald-300 mt-2">✓ Domain verified — live!</p>
+            ) : (
+              <p className="text-amber-300 mt-2">⚠ Pending DNS verification</p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Preview */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <p className="text-sm font-medium mb-3">Preview</p>
+        <div className="flex items-center gap-3 p-3 rounded-lg bg-background">
+          <div
+            className="w-10 h-10 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0"
+            style={{ backgroundColor: `${accentColor}20`, color: accentColor, border: `1px solid ${accentColor}30` }}
+          >
+            {branding?.name?.charAt(0) || "C"}
+          </div>
+          <div>
+            <p className="text-sm font-medium">{branding?.name || "Your Business"}</p>
+            <p className="text-[10px] text-muted-foreground">{customDomain || `${slug}.cityhelp.app`}</p>
+          </div>
+        </div>
+      </div>
+
+      <button
+        onClick={handleSave}
+        disabled={saving}
+        className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm px-6"
+      >
+        {saving ? "Saving…" : "Save branding"}
+      </button>
     </div>
   );
 }

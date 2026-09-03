@@ -327,15 +327,24 @@ export function ProviderApp() {
   // ── Render: home ──────────────────────────────────────
   return (
     <div className="min-h-screen bg-background pb-20">
-      {/* Header */}
+      {/* Header — shows tenant branding */}
       <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
         <div className="px-4 py-3 flex items-center justify-between">
           <button onClick={() => setView("home")} className="text-muted-foreground hover:text-foreground">
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <div className="text-center">
-            <p className="text-[11px] text-muted-foreground leading-none">{provider.tenantName}</p>
-            <p className="text-xs font-medium mt-0.5">{provider.cityName} · {provider.zone}</p>
+          <div className="flex items-center gap-2">
+            {/* Tenant logo or initials */}
+            <div
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0"
+              style={{ backgroundColor: `${provider.tenantAccent || "#10b981"}20`, color: provider.tenantAccent || "#10b981", border: `1px solid ${provider.tenantAccent || "#10b981"}30` }}
+            >
+              {provider.tenantName?.charAt(0) || "C"}
+            </div>
+            <div className="text-center">
+              <p className="text-[11px] text-muted-foreground leading-none">{provider.tenantName}</p>
+              <p className="text-xs font-medium mt-0.5">{provider.cityName} · {provider.zone}</p>
+            </div>
           </div>
           <button onClick={() => clearProvider()} className="text-muted-foreground hover:text-foreground text-xs">
             Logout
