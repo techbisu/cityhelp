@@ -7,14 +7,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { safeParse } from "@/lib/utils";
+import { getStaffSession } from "@/lib/session";
 
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const { searchParams } = new URL(req.url);
-  const tenantSlug = searchParams.get("tenantSlug");
+
+  // Auth: require staff session
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const customer = await db.customer.findUnique({
     where: { id },
@@ -31,19 +34,16 @@ export async function GET(
   });
   if (!customer) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // Tenant isolation
-  if (tenantSlug) {
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    if (!tenant || customer.tenantId !== tenant.id) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
+  // Tenant isolation via session
+  if (customer.tenantId !== staffSession.tenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   // Audit log
   await db.auditLog.create({
     data: {
       tenantId: customer.tenantId,
-      actor: `staff:${tenantSlug || "system"}`,
+      actor: `staff:${staffSession.staffId}`,
       action: "export",
       entity: "customer",
       entityId: id,

@@ -458,8 +458,9 @@ function DashboardPage({ slug, cityId, stats, setStats }: { slug: string; cityId
       .then((d) => setStats(d))
       .catch(() => {});
     const id = setInterval(() => {
+      if (document.hidden) return; // pause when tab is hidden
       fetch(`/api/stats?${params}`).then((r) => r.json()).then((d) => setStats(d)).catch(() => {});
-    }, 8000);
+    }, 20000); // 20s — was 8s, reduced polling load
     return () => clearInterval(id);
   }, [slug, cityId, setStats]);
 
@@ -658,8 +659,9 @@ function OrdersPage({ slug, cityId, orders, setOrders, providers, setProviders }
       .then((d) => setProviders(d.providers || []))
       .catch(() => {});
     const id = setInterval(() => {
+      if (document.hidden) return;
       fetch(`/api/orders?${params}`).then((r) => r.json()).then((d) => setOrders(d.orders || [])).catch(() => {});
-    }, 6000);
+    }, 10000); // 10s — was 6s
     return () => clearInterval(id);
   }, [slug, cityId, setOrders, setProviders]);
 
@@ -1107,8 +1109,9 @@ function EscalationPage({ slug, cityId, orders, setOrders, providers, setProvide
     if (cityId) p.set("cityId", cityId);
     fetch(`/api/providers?${p}`).then((r) => r.json()).then((d) => setProviders(d.providers || []));
     const id = setInterval(() => {
+      if (document.hidden) return;
       fetch(`/api/orders?${params}`).then((r) => r.json()).then((d) => setOrders(d.orders || []));
-    }, 6000);
+    }, 10000); // 10s — was 6s
     return () => clearInterval(id);
   }, [slug, cityId, setOrders, setProviders]);
 

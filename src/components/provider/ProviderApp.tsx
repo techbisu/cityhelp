@@ -112,23 +112,19 @@ export function ProviderApp() {
     }
   }, [providerId, refresh]);
 
-  // ── Poll for incoming broadcast jobs ──────────────────
+  // ── Poll for incoming broadcast jobs (uses dedicated /incoming endpoint) ──
   useEffect(() => {
-    if (!provider || !provider.isOnline || !provider.tenantSlug) return;
+    if (!provider || !provider.isOnline) return;
     let cancelled = false;
     async function checkIncoming() {
-      if (cancelled || !provider || !provider.tenantSlug) return;
+      if (cancelled || !provider) return;
       try {
-        const res = await fetch(`/api/orders?tenantSlug=${provider.tenantSlug}&status=broadcast`);
+        // Use the dedicated /incoming endpoint — queries OrderBroadcast for this provider only
+        const res = await fetch(`/api/providers/${provider.id}/incoming`);
+        if (!res.ok) return;
         const data = await res.json();
-        const myBroadcasts = (data.orders as Job[]).filter((o) => {
-          // Only show orders in my city, with my service
-          if (o.city.name !== provider.cityName) return false;
-          // Check if this provider is in the broadcast list — for demo, accept all broadcast orders in my city
-          return true;
-        });
+        const myBroadcasts = (data.jobs || []) as Job[];
         if (myBroadcasts.length > 0 && !incomingJob) {
-          // Pick the newest
           setIncomingJob(myBroadcasts[0]);
         }
       } catch {

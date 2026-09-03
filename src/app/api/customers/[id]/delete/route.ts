@@ -13,24 +13,24 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import crypto from "crypto";
+import { getStaffSession } from "@/lib/session";
 
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const body = await req.json().catch(() => ({}));
-  const tenantSlug = body.tenantSlug;
+
+  // Auth: require staff session
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const customer = await db.customer.findUnique({ where: { id } });
   if (!customer) return NextResponse.json({ error: "not found" }, { status: 404 });
 
-  // Tenant isolation
-  if (tenantSlug) {
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    if (!tenant || customer.tenantId !== tenant.id) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
+  // Tenant isolation via session
+  if (customer.tenantId !== staffSession.tenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   const phoneHash = crypto.createHash("sha256").update(customer.phone).digest("hex").slice(0, 12);
@@ -53,7 +53,7 @@ export async function POST(
   await db.auditLog.create({
     data: {
       tenantId: customer.tenantId,
-      actor: `staff:${tenantSlug || "system"}`,
+      actor: `staff:${staffSession.staffId}`,
       action: "delete",
       entity: "customer",
       entityId: id,

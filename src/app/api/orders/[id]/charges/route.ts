@@ -17,6 +17,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sendWhatsAppButtons } from "@/lib/whatsapp";
 import { formatINR } from "@/lib/utils";
+import { getProviderSession, getStaffSession } from "@/lib/session";
 
 export async function POST(
   req: NextRequest,
@@ -24,9 +25,13 @@ export async function POST(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { providerId, tenantSlug, deliveryCharge, serviceCharge, addonsCharge, itemsTotal } = body;
+  const { providerId, deliveryCharge, serviceCharge, addonsCharge, itemsTotal } = body;
 
   if (!providerId) return NextResponse.json({ error: "providerId required" }, { status: 400 });
+
+  // Auth: require provider session
+  const providerSession = getProviderSession(req);
+  if (!providerSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const order = await db.order.findUnique({
     where: { id },
@@ -34,12 +39,9 @@ export async function POST(
   });
   if (!order) return NextResponse.json({ error: "order not found" }, { status: 404 });
 
-  // Tenant isolation
-  if (tenantSlug) {
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    if (!tenant || order.tenantId !== tenant.id) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
+  // Tenant isolation via session
+  if (order.tenantId !== providerSession.tenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   // Verify provider belongs to same tenant
@@ -145,15 +147,16 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { agreed, tenantSlug } = body;
+  const { agreed } = body;
+
+  // This endpoint is primarily called internally by the bot (order-actions.ts).
+  // For external HTTP calls, require a staff session.
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const order = await db.order.findUnique({ where: { id }, include: { customer: true, tenant: true } });
   if (!order) return NextResponse.json({ error: "order not found" }, { status: 404 });
-
-  if (tenantSlug) {
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    if (!tenant || order.tenantId !== tenant.id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
-  }
+  if (order.tenantId !== staffSession.tenantId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   if (agreed) {
     await db.order.update({

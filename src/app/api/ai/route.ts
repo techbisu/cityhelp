@@ -42,12 +42,18 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { tenantSlug, label, baseUrl, apiKey, modelName } = body;
-  if (!tenantSlug || !label || !baseUrl || !apiKey) {
+  const { label, baseUrl, apiKey, modelName } = body;
+  if (!label || !baseUrl || !apiKey) {
     return NextResponse.json({ error: "missing fields" }, { status: 400 });
   }
-  const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
+
+  // Auth: require staff session
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const tenant = await db.tenant.findUnique({ where: { slug: staffSession.tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  if (tenant.id !== staffSession.tenantId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const cipher = encrypt(apiKey);
   const provider = await db.aiProvider.create({
@@ -107,9 +113,13 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (action === "route") {
-    const tenantSlug = body.tenantSlug;
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
+    // Auth already checked at the top of PATCH (staffSession)
+    // But PATCH doesn't have staffSession yet — let's add it
+    const staffSession2 = getStaffSession(req);
+    if (!staffSession2) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+    const tenant = await db.tenant.findUnique({ where: { slug: staffSession2.tenantSlug } });
     if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+    if (tenant.id !== staffSession2.tenantId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
     const route = await db.aiTaskRoute.upsert({
       where: { tenantId_task: { tenantId: tenant.id, task } },

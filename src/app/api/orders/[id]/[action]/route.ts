@@ -2,14 +2,16 @@
  * POST /api/orders/[id]/[action] — accept | reject | status | assign
  *
  * Security:
- *  - Tenant isolation: verifies order.tenantId matches the caller's session/tenantSlug
+ *  - Requires provider or staff session (signed httpOnly cookie)
+ *  - Tenant isolation via session.tenantId — never trusts body tenantSlug
  *  - Race-safe accept via Prisma $transaction
  *  - Sends WhatsApp notification to customer on accept/picked/delivered
- *  - Writes audit logs for sensitive actions (assign, status changes by admin)
+ *  - Writes audit logs for sensitive actions
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sendWhatsAppText } from "@/lib/whatsapp";
+import { getStaffSession, getProviderSession } from "@/lib/session";
 
 export async function POST(
   req: NextRequest,
@@ -17,7 +19,15 @@ export async function POST(
 ) {
   const { id, action } = await params;
   const body = await req.json();
-  const { providerId, reason, actor, status: newStatus, tenantSlug } = body;
+  const { providerId, reason, actor, status: newStatus } = body;
+
+  // ── AUTH: require provider or staff session ──
+  const providerSession = getProviderSession(req);
+  const staffSession = getStaffSession(req);
+  if (!providerSession && !staffSession) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const callerTenantId = staffSession?.tenantId || providerSession?.tenantId;
 
   const order = await db.order.findUnique({
     where: { id },
@@ -27,14 +37,8 @@ export async function POST(
     return NextResponse.json({ error: "order not found" }, { status: 404 });
   }
 
-  // ── TENANT ISOLATION ──
-  // Verify the caller's tenant matches the order's tenant
-  let callerTenantId: string | null = null;
-  if (tenantSlug) {
-    const callerTenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    callerTenantId = callerTenant?.id || null;
-  }
-  if (callerTenantId && order.tenantId !== callerTenantId) {
+  // ── TENANT ISOLATION: verify order belongs to caller's tenant ──
+  if (order.tenantId !== callerTenantId) {
     return NextResponse.json({ error: "forbidden", message: "Order does not belong to your tenant" }, { status: 403 });
   }
   // If providerId given, verify provider belongs to same tenant

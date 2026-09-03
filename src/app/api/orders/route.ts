@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
       city: { select: { id: true, name: true } },
       acceptedBy: { select: { id: true, name: true, phone: true, zone: true } },
       broadcasts: { include: { provider: { select: { id: true, name: true, phone: true } } } },
-      activity: { orderBy: { createdAt: "asc" } },
+      activity: { orderBy: { createdAt: "asc" }, take: 20 },
     },
     orderBy: { createdAt: "desc" },
     take: 200,

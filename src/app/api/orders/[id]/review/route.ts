@@ -84,14 +84,13 @@ export async function POST(
     },
   });
 
-  // Update provider's average rating
-  const allReviews = await db.review.findMany({
-    where: { providerId: order.acceptedById },
-    select: { rating: true },
+  // Update provider's average rating — use aggregate instead of loading all reviews
+  const ratingAgg = await db.review.aggregate({
+    where: { providerId: order.acceptedById, tenantId: order.tenantId },
+    _avg: { rating: true },
+    _count: true,
   });
-  const avgRating = allReviews.length > 0
-    ? allReviews.reduce((s, r) => s + r.rating, 0) / allReviews.length
-    : 5.0;
+  const avgRating = ratingAgg._avg.rating ?? 5.0;
   await db.provider.update({
     where: { id: order.acceptedById },
     data: { rating: Math.round(avgRating * 10) / 10 },

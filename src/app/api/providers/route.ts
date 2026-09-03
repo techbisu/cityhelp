@@ -44,6 +44,7 @@ export async function GET(req: NextRequest) {
       _count: { select: { acceptedOrders: true } },
     },
     orderBy: { createdAt: "asc" },
+    take: 200,
   });
 
   // Enrich with service names
@@ -64,11 +65,16 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { tenantSlug, name, phone, pin, cityId, serviceIds, zone } = body;
-  if (!tenantSlug || !name || !phone || !pin || !cityId) {
+  const { name, phone, pin, cityId, serviceIds, zone } = body;
+  if (!name || !phone || !pin || !cityId) {
     return NextResponse.json({ error: "missing fields" }, { status: 400 });
   }
-  const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
+
+  // Auth: require staff session
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const tenant = await db.tenant.findUnique({ where: { slug: staffSession.tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
 
   const provider = await db.provider.create({

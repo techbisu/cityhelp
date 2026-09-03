@@ -21,6 +21,7 @@ import { db } from "@/lib/db";
 import { sendWhatsAppText } from "@/lib/whatsapp";
 import { generateUpiDeepLink, buildPaymentRequestMessage } from "@/lib/upi";
 import { safeParse } from "@/lib/utils";
+import { getProviderSession } from "@/lib/session";
 
 export async function POST(
   req: NextRequest,
@@ -28,9 +29,13 @@ export async function POST(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { providerId, amount, tenantSlug } = body;
+  const { providerId, amount } = body;
 
   if (!providerId) return NextResponse.json({ error: "providerId required" }, { status: 400 });
+
+  // Auth: require provider session
+  const providerSession = getProviderSession(req);
+  if (!providerSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const order = await db.order.findUnique({
     where: { id },
@@ -38,12 +43,9 @@ export async function POST(
   });
   if (!order) return NextResponse.json({ error: "order not found" }, { status: 404 });
 
-  // Tenant isolation
-  if (tenantSlug) {
-    const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug }, select: { id: true } });
-    if (!tenant || order.tenantId !== tenant.id) {
-      return NextResponse.json({ error: "forbidden" }, { status: 403 });
-    }
+  // Tenant isolation via session
+  if (order.tenantId !== providerSession.tenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   // Verify provider belongs to same tenant
