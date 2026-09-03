@@ -64,6 +64,9 @@ model Tenant {
   waTestStatus      String   @default("untested") // untested | ok | fail
   // email
   resendApiKeyMask String? // last 4 only
+  // payments — business UPI for collecting customer payments
+  upiId            String? // e.g. shantiexpress@okhdfcbank
+  upiName          String? // e.g. "Shanti Express"
   // billing
   razorpayCustomerId String?
   razorpaySubscriptionId String?
@@ -258,6 +261,18 @@ model Order {
   quoteAmount   Int?     // paise
   quoteDelivery String?  // estimated delivery text
   quoteStatus   String?  // pending | accepted | declined | negotiated
+  // payments (UPI / Razorpay)
+  paymentAmount      Int?       // paise — amount to collect
+  paymentMethod      String?    // upi | cash | razorpay
+  paymentStatus      String?    @default("none") // none | requested | paid | failed
+  paymentRequestedAt DateTime?
+  paymentConfirmedAt DateTime?
+  paymentConfirmedById String?  // provider who confirmed
+  upiPaymentLink     String?    // generated UPI deep link
+  upiId              String?    // UPI ID used (tenant or provider)
+  razorpayPaymentLinkId String? // future: Razorpay payment link ID
+  razorpayPaymentId  String?    // future: Razorpay payment ID
+  paymentScreenshotUrl String?  // future: customer-uploaded screenshot URL
   // misc
   source        String   @default("bot") // bot | manual
   activity      Activity[]

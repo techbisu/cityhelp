@@ -42,6 +42,11 @@ interface Job {
   city: { name: string };
   acceptedBy: { name: string; phone: string; zone: string } | null;
   quoteAmount: number | null;
+  paymentAmount: number | null;
+  paymentMethod: string | null;
+  paymentStatus: string | null;
+  paymentRequestedAt: string | null;
+  upiPaymentLink: string | null;
   createdAt: string;
   acceptedAt: string | null;
 }
@@ -284,6 +289,7 @@ export function ProviderApp() {
     return (
       <JobDetail
         job={selectedJob}
+        provider={provider}
         onBack={() => { setLocalView("home"); setSelectedJob(null); }}
         onUpdate={(s) => updateJobStatus(selectedJob, s)}
       />
@@ -587,10 +593,82 @@ function IncomingCallScreen({ job, onAccept, onReject }: { job: Job; onAccept: (
   );
 }
 
-function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; onUpdate: (s: "picked" | "delivered") => void }) {
+function JobDetail({ job, onBack, onUpdate, provider }: { job: Job; onBack: () => void; onUpdate: (s: "picked" | "delivered") => void; provider: ProviderInfo | null }) {
   const items = safeParse<OrderItem[]>(job.items, []);
   const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
   const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "Order";
+  const [paymentModal, setPaymentModal] = useState<"none" | "request" | "confirm">("none");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"upi" | "cash">("upi");
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [localJob, setLocalJob] = useState(job);
+
+  // Sync local job when prop changes
+  useEffect(() => { setLocalJob(job); }, [job]);
+
+  async function requestPayment() {
+    if (!provider || !paymentAmount) return;
+    setPaymentLoading(true);
+    try {
+      const res = await fetch(`/api/orders/${localJob.id}/payment-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerId: provider.id,
+          amount: paymentAmount,
+          tenantSlug: provider.tenantSlug,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success(`💳 Payment link sent to customer on WhatsApp (₹${paymentAmount})`);
+        setLocalJob({
+          ...localJob,
+          paymentStatus: "requested",
+          paymentAmount: Math.round(parseFloat(paymentAmount) * 100),
+          paymentMethod: "upi",
+          paymentRequestedAt: new Date().toISOString(),
+          upiPaymentLink: data.payment?.upiLink,
+        });
+        setPaymentModal("none");
+        setPaymentAmount("");
+      } else {
+        toast.error(data.message || data.error || "Failed to send payment link");
+      }
+    } finally {
+      setPaymentLoading(false);
+    }
+  }
+
+  async function confirmPayment() {
+    if (!provider) return;
+    setPaymentLoading(true);
+    try {
+      const res = await fetch(`/api/orders/${localJob.id}/payment-confirm`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerId: provider.id,
+          tenantSlug: provider.tenantSlug,
+          method: paymentMethod,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        toast.success("✅ Payment confirmed — customer notified");
+        setLocalJob({
+          ...localJob,
+          paymentStatus: "paid",
+        });
+        setPaymentModal("none");
+      } else {
+        toast.error(data.error || "Failed to confirm payment");
+      }
+    } finally {
+      setPaymentLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-background pb-24">
       <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
@@ -599,7 +677,7 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div>
-            <p className="text-xs text-muted-foreground">Order #{job.code}</p>
+            <p className="text-xs text-muted-foreground">Order #{localJob.code}</p>
             <h2 className="text-sm font-medium">{svcName}</h2>
           </div>
         </div>
@@ -609,8 +687,8 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
         {/* Status */}
         <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border">
           <span className="text-xs text-muted-foreground">Current status</span>
-          <span className={cn("text-xs px-2 py-0.5 rounded-full", ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.bg, ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.color)}>
-            {ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.label || job.status}
+          <span className={cn("text-xs px-2 py-0.5 rounded-full", ORDER_STATUS[localJob.status as keyof typeof ORDER_STATUS]?.bg, ORDER_STATUS[localJob.status as keyof typeof ORDER_STATUS]?.color)}>
+            {ORDER_STATUS[localJob.status as keyof typeof ORDER_STATUS]?.label || localJob.status}
           </span>
         </div>
 
@@ -619,11 +697,11 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Customer</p>
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium">{job.customer.name || "Unknown"}</p>
-              <p className="text-xs text-muted-foreground">{job.customer.phone}</p>
+              <p className="text-sm font-medium">{localJob.customer.name || "Unknown"}</p>
+              <p className="text-xs text-muted-foreground">{localJob.customer.phone}</p>
             </div>
             <a
-              href={`tel:${job.customer.phone}`}
+              href={`tel:${localJob.customer.phone}`}
               className="w-10 h-10 rounded-full bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center text-emerald-300 hover:bg-emerald-500/25 transition-colors"
             >
               <Phone className="w-4 h-4" />
@@ -646,20 +724,20 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
             </ul>
           </div>
         )}
-        {job.description && (
+        {localJob.description && (
           <div className="p-4 rounded-xl bg-card border border-border">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Description</p>
-            <p className="text-sm">{job.description}</p>
+            <p className="text-sm">{localJob.description}</p>
           </div>
         )}
 
         {/* Address */}
         <div className="p-4 rounded-xl bg-card border border-border">
           <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Address</p>
-          <p className="text-sm">{job.addressText}</p>
-          {job.addressArea && <p className="text-xs text-muted-foreground mt-1">Area: {job.addressArea}</p>}
+          <p className="text-sm">{localJob.addressText}</p>
+          {localJob.addressArea && <p className="text-xs text-muted-foreground mt-1">Area: {localJob.addressArea}</p>}
           <a
-            href={mapsLink(job.addressLat, job.addressLng, job.addressText)}
+            href={mapsLink(localJob.addressLat, localJob.addressLng, localJob.addressText)}
             target="_blank"
             className="mt-3 inline-flex items-center gap-1.5 text-xs text-emerald-300 hover:text-emerald-200"
           >
@@ -668,19 +746,26 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
         </div>
 
         {/* Timing */}
-        {job.timing && (
+        {localJob.timing && (
           <div className="p-4 rounded-xl bg-card border border-border">
             <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Timing</p>
             <p className="text-sm flex items-center gap-1.5">
-              <Clock className="w-4 h-4 text-muted-foreground" /> {job.timing}
+              <Clock className="w-4 h-4 text-muted-foreground" /> {localJob.timing}
             </p>
           </div>
         )}
 
+        {/* Payment section */}
+        <PaymentSection
+          job={localJob}
+          onRequest={() => setPaymentModal("request")}
+          onConfirm={() => setPaymentModal("confirm")}
+        />
+
         {/* Actions */}
         <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-background/95 backdrop-blur-xl border-t border-border">
           <div className="flex gap-2">
-            {job.status === "accepted" && (
+            {localJob.status === "accepted" && (
               <button
                 onClick={() => onUpdate("picked")}
                 className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-medium py-3 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
@@ -688,7 +773,7 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
                 <Package className="w-4 h-4" /> Picked up
               </button>
             )}
-            {job.status === "picked" && (
+            {localJob.status === "picked" && (
               <button
                 onClick={() => onUpdate("delivered")}
                 className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
@@ -699,8 +784,160 @@ function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; on
           </div>
         </div>
       </div>
+
+      {/* Payment request modal */}
+      {paymentModal === "request" && (
+        <div className="fixed inset-0 bg-black/60 z-30 flex items-end sm:items-center justify-center" onClick={() => setPaymentModal("none")}>
+          <div className="bg-card w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-1">Request payment</h3>
+            <p className="text-xs text-muted-foreground mb-4">Customer will get a UPI payment link on WhatsApp.</p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Amount (₹)</label>
+                <input
+                  value={paymentAmount}
+                  onChange={(e) => setPaymentAmount(e.target.value)}
+                  inputMode="decimal"
+                  placeholder="0"
+                  className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2.5 text-lg tnum outline-none focus:border-emerald-500/40"
+                  autoFocus
+                />
+              </div>
+              <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
+                <p className="font-medium mb-1">💳 How it works:</p>
+                <ol className="list-decimal list-inside space-y-0.5 text-emerald-300/80">
+                  <li>UPI link sent to customer's WhatsApp</li>
+                  <li>Customer pays via any UPI app (PhonePe/GPay/Paytm)</li>
+                  <li>Customer shares screenshot on WhatsApp</li>
+                  <li>You tap "Confirm Payment" once you see it</li>
+                </ol>
+              </div>
+              <button
+                onClick={requestPayment}
+                disabled={paymentLoading || !paymentAmount}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+              >
+                {paymentLoading ? "Sending…" : `Send ₹${paymentAmount || "0"} payment link`}
+              </button>
+              <button onClick={() => setPaymentModal("none")} className="w-full text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment confirm modal */}
+      {paymentModal === "confirm" && (
+        <div className="fixed inset-0 bg-black/60 z-30 flex items-end sm:items-center justify-center" onClick={() => setPaymentModal("none")}>
+          <div className="bg-card w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-1">Confirm payment received</h3>
+            <p className="text-xs text-muted-foreground mb-4">
+              {localJob.paymentAmount
+                ? `Expected: ₹${(localJob.paymentAmount / 100).toLocaleString("en-IN")}`
+                : "Enter the amount you received."}
+            </p>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Payment method</label>
+                <div className="flex gap-2 mt-1">
+                  <button
+                    onClick={() => setPaymentMethod("upi")}
+                    className={cn("flex-1 py-2 rounded-lg text-sm border", paymentMethod === "upi" ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" : "border-border")}
+                  >
+                    💳 UPI
+                  </button>
+                  <button
+                    onClick={() => setPaymentMethod("cash")}
+                    className={cn("flex-1 py-2 rounded-lg text-sm border", paymentMethod === "cash" ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" : "border-border")}
+                  >
+                    💵 Cash
+                  </button>
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                <p>⚠️ Make sure you've verified the payment screenshot before confirming.</p>
+              </div>
+              <button
+                onClick={confirmPayment}
+                disabled={paymentLoading}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+              >
+                {paymentLoading ? "Confirming…" : "✅ Confirm payment received"}
+              </button>
+              <button onClick={() => setPaymentModal("none")} className="w-full text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Payment section — shows payment status + action buttons
+// ─────────────────────────────────────────────────────────────
+
+function PaymentSection({ job, onRequest, onConfirm }: { job: Job; onRequest: () => void; onConfirm: () => void }) {
+  const paymentAmountRupees = job.paymentAmount ? (job.paymentAmount / 100).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : null;
+
+  // No payment requested yet
+  if (!job.paymentStatus || job.paymentStatus === "none") {
+    return (
+      <div className="p-4 rounded-xl border border-dashed border-border bg-card/50">
+        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Payment</p>
+        <p className="text-sm text-muted-foreground mb-3">No payment requested yet</p>
+        <button
+          onClick={onRequest}
+          className="w-full bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-medium py-2.5 rounded-xl text-sm flex items-center justify-center gap-2"
+        >
+          💳 Request payment
+        </button>
+      </div>
+    );
+  }
+
+  // Payment requested, waiting
+  if (job.paymentStatus === "requested") {
+    return (
+      <div className="p-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] uppercase tracking-wider text-amber-300">Payment requested</p>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 animate-live-dot">Waiting</span>
+        </div>
+        {paymentAmountRupees && (
+          <p className="text-2xl font-semibold tnum mb-1">₹{paymentAmountRupees}</p>
+        )}
+        <p className="text-xs text-muted-foreground mb-3">
+          UPI link sent to customer. Ask them to share the screenshot after paying.
+        </p>
+        <button
+          onClick={onConfirm}
+          className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-2.5 rounded-xl text-sm flex items-center justify-center gap-2"
+        >
+          ✅ Confirm payment received
+        </button>
+      </div>
+    );
+  }
+
+  // Payment confirmed
+  if (job.paymentStatus === "paid") {
+    return (
+      <div className="p-4 rounded-xl border border-emerald-500/30 bg-emerald-500/5">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-[11px] uppercase tracking-wider text-emerald-300">Payment</p>
+          <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center gap-1">
+            <Check className="w-3 h-3" /> Paid
+          </span>
+        </div>
+        {paymentAmountRupees && (
+          <p className="text-2xl font-semibold tnum mb-1">₹{paymentAmountRupees}</p>
+        )}
+        <p className="text-xs text-muted-foreground">via {job.paymentMethod || "UPI"} · customer notified</p>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function NewJobScreen({ provider, onBack, onCreated }: { provider: ProviderInfo; onBack: () => void; onCreated: () => void }) {

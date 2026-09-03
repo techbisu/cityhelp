@@ -126,7 +126,7 @@ export function AdminApp() {
   const isImpersonating = useApp((s) => s.isImpersonating);
   const setImpersonation = useApp((s) => s.setImpersonation);
 
-  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "billing" | "team" | "notifications" | "onboarding">("dashboard");
+  const [page, setPage] = useState<"dashboard" | "orders" | "escalation" | "providers" | "customers" | "services" | "cities" | "whatsapp" | "ai" | "billing" | "payments" | "team" | "notifications" | "onboarding">("dashboard");
   const [tenant, setTenant] = useState<{ name: string; slug: string; accentColor: string; waBusinessName: string | null; waVerified: boolean } | null>(null);
   const [cities, setCities] = useState<CityT[]>([]);
   const [orders, setOrders] = useState<Job[]>([]);
@@ -242,6 +242,7 @@ export function AdminApp() {
             <NavItem icon={MessageSquare} label="WhatsApp" active={page === "whatsapp"} onClick={() => setPage("whatsapp")} />
             <NavItem icon={Sparkles} label="AI (BYOK)" active={page === "ai"} onClick={() => setPage("ai")} />
             <NavItem icon={CreditCard} label="Billing" active={page === "billing"} onClick={() => setPage("billing")} />
+            <NavItem icon={CreditCard} label="Payments" active={page === "payments"} onClick={() => setPage("payments")} />
             <NavItem icon={Users} label="Team" active={page === "team"} onClick={() => setPage("team")} />
             <NavItem icon={Bell} label="Notifications" active={page === "notifications"} onClick={() => setPage("notifications")} />
           </div>
@@ -341,6 +342,7 @@ export function AdminApp() {
           {page === "whatsapp" && <WhatsAppPage slug={effectiveSlug} />}
           {page === "ai" && <AIPage slug={effectiveSlug} />}
           {page === "billing" && <BillingPage slug={effectiveSlug} />}
+          {page === "payments" && <PaymentsPage slug={effectiveSlug} />}
           {page === "team" && <TeamPage slug={effectiveSlug} staffEmail={adminStaffEmail} />}
           {page === "notifications" && <NotificationsPage slug={effectiveSlug} />}
         </main>
@@ -2234,37 +2236,284 @@ function AIPage({ slug }: { slug: string }) {
   );
 }
 
+// ── AI Provider presets ─────────────────────────────────
+const AI_PRESETS: Array<{
+  id: string;
+  name: string;
+  baseUrl: string;
+  models: Array<{ id: string; label: string; capabilities: { chat: boolean; image: boolean; audio: boolean } }>;
+  keyPrefix: string;
+  docsUrl: string;
+}> = [
+  {
+    id: "openai",
+    name: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    models: [
+      { id: "gpt-4o", label: "GPT-4o (best, multimodal)", capabilities: { chat: true, image: true, audio: true } },
+      { id: "gpt-4o-mini", label: "GPT-4o mini (fast, cheap)", capabilities: { chat: true, image: true, audio: false } },
+      { id: "gpt-4-turbo", label: "GPT-4 Turbo", capabilities: { chat: true, image: true, audio: false } },
+      { id: "gpt-3.5-turbo", label: "GPT-3.5 Turbo (cheapest)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "whisper-1", label: "Whisper (audio transcription)", capabilities: { chat: false, image: false, audio: true } },
+    ],
+    keyPrefix: "sk-",
+    docsUrl: "https://platform.openai.com/api-keys",
+  },
+  {
+    id: "groq",
+    name: "Groq (ultra-fast)",
+    baseUrl: "https://api.groq.com/openai/v1",
+    models: [
+      { id: "llama-3.3-70b-versatile", label: "Llama 3.3 70B (recommended)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "llama-3.1-8b-instant", label: "Llama 3.1 8B (instant)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "mixtral-8x7b-32768", label: "Mixtral 8x7B", capabilities: { chat: true, image: false, audio: false } },
+      { id: "whisper-large-v3", label: "Whisper Large v3 (audio)", capabilities: { chat: false, image: false, audio: true } },
+    ],
+    keyPrefix: "gsk_",
+    docsUrl: "https://console.groq.com/keys",
+  },
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    models: [
+      { id: "deepseek-chat", label: "DeepSeek Chat (V3)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "deepseek-reasoner", label: "DeepSeek Reasoner (R1)", capabilities: { chat: true, image: false, audio: false } },
+    ],
+    keyPrefix: "sk-",
+    docsUrl: "https://platform.deepseek.com/api_keys",
+  },
+  {
+    id: "mistral",
+    name: "Mistral AI",
+    baseUrl: "https://api.mistral.ai/v1",
+    models: [
+      { id: "mistral-large-latest", label: "Mistral Large (best)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "mistral-small-latest", label: "Mistral Small (fast)", capabilities: { chat: true, image: false, audio: false } },
+      { id: "pixtral-large-latest", label: "Pixtral Large (vision)", capabilities: { chat: true, image: true, audio: false } },
+    ],
+    keyPrefix: "",
+    docsUrl: "https://console.mistral.ai/api-keys",
+  },
+  {
+    id: "openrouter",
+    name: "OpenRouter (multi-model)",
+    baseUrl: "https://openrouter.ai/api/v1",
+    models: [
+      { id: "openai/gpt-4o-mini", label: "GPT-4o mini (via OpenRouter)", capabilities: { chat: true, image: true, audio: false } },
+      { id: "anthropic/claude-3.5-sonnet", label: "Claude 3.5 Sonnet", capabilities: { chat: true, image: true, audio: false } },
+      { id: "google/gemini-flash-1.5", label: "Gemini Flash 1.5", capabilities: { chat: true, image: true, audio: false } },
+      { id: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B", capabilities: { chat: true, image: false, audio: false } },
+    ],
+    keyPrefix: "sk-or-",
+    docsUrl: "https://openrouter.ai/keys",
+  },
+  {
+    id: "gemini",
+    name: "Google Gemini (OpenAI-compat)",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai",
+    models: [
+      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (fast, multimodal)", capabilities: { chat: true, image: true, audio: false } },
+      { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro (best)", capabilities: { chat: true, image: true, audio: false } },
+      { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash (cheap)", capabilities: { chat: true, image: true, audio: false } },
+    ],
+    keyPrefix: "AIza",
+    docsUrl: "https://aistudio.google.com/apikey",
+  },
+  {
+    id: "custom",
+    name: "Custom / Self-hosted (vLLM, Ollama, etc.)",
+    baseUrl: "",
+    models: [
+      { id: "custom-model", label: "Custom model (type below)", capabilities: { chat: true, image: false, audio: false } },
+    ],
+    keyPrefix: "",
+    docsUrl: "",
+  },
+];
+
 function AddAiProviderModal({ slug, onClose, onAdded }: { slug: string; onClose: () => void; onAdded: () => void }) {
+  const [presetId, setPresetId] = useState("openai");
   const [label, setLabel] = useState("");
-  const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
+  const [baseUrl, setBaseUrl] = useState(AI_PRESETS[0].baseUrl);
+  const [modelName, setModelName] = useState(AI_PRESETS[0].models[0].id);
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string; capabilities?: { chat: boolean; image: boolean; audio: boolean } } | null>(null);
+
+  const preset = AI_PRESETS.find((p) => p.id === presetId) || AI_PRESETS[0];
+  const selectedModel = preset.models.find((m) => m.id === modelName);
+
+  function selectPreset(id: string) {
+    const p = AI_PRESETS.find((x) => x.id === id) || AI_PRESETS[0];
+    setPresetId(id);
+    setBaseUrl(p.baseUrl);
+    setModelName(p.models[0].id);
+    setLabel(p.name === "Custom / Self-hosted (vLLM, Ollama, etc.)" ? "" : p.name);
+  }
+
+  async function handleTest() {
+    if (!apiKey || !baseUrl) {
+      toast.error("Enter base URL and API key first");
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      // First save the provider, then test
+      const saveRes = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantSlug: slug, label: label || preset.name, baseUrl, apiKey, modelName }),
+      });
+      if (!saveRes.ok) {
+        const d = await saveRes.json();
+        setTestResult({ ok: false, message: d.error || "Failed to save" });
+        setTesting(false);
+        return;
+      }
+      const saved = await saveRes.json();
+      // Now test it
+      const testRes = await fetch("/api/ai", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: saved.provider.id, action: "test", modelName }),
+      });
+      const testData = await testRes.json();
+      if (testData.ok) {
+        setTestResult({
+          ok: true,
+          message: `✓ Connection works! Supports: ${[testData.supports.chat && "chat", testData.supports.image && "image", testData.supports.audio && "audio"].filter(Boolean).join(", ")}`,
+          capabilities: testData.supports,
+        });
+        toast.success("Connection verified");
+      } else {
+        setTestResult({ ok: false, message: testData.error || "Connection failed" });
+        toast.error("Connection failed — provider saved but not verified");
+      }
+    } finally {
+      setTesting(false);
+    }
+  }
 
   async function handleSubmit() {
     setLoading(true);
-    const res = await fetch("/api/ai", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenantSlug: slug, label, baseUrl, apiKey, modelName: "gpt-4o-mini" }),
-    });
-    if (res.ok) {
-      toast.success("Provider added");
-      onAdded();
-    } else {
-      toast.error("Failed");
+    try {
+      // If already tested, the provider is saved — just close
+      if (testResult?.ok) {
+        toast.success("Provider added and verified");
+        onAdded();
+        return;
+      }
+      // Otherwise save without testing
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantSlug: slug, label: label || preset.name, baseUrl, apiKey, modelName }),
+      });
+      if (res.ok) {
+        toast.success("Provider added (untested — click Test to verify)");
+        onAdded();
+      } else {
+        const d = await res.json();
+        toast.error(d.error || "Failed");
+      }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   return (
-    <Modal title="Add AI provider" onClose={onClose}>
-      <div className="space-y-3">
-        <div className="text-xs text-muted-foreground p-2 rounded-lg bg-background border border-border">
-          Any OpenAI-compatible endpoint works: OpenAI, Groq, DeepSeek, Mistral, OpenRouter, Gemini's OpenAI-compatible endpoint, self-hosted vLLM.
-        </div>
-        <Field label="Label"><input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. OpenAI Main" className={inputCls} /></Field>
-        <Field label="Base URL"><input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} className={cn(inputCls, "font-mono text-xs")} /></Field>
+    <Modal title="Add AI provider" onClose={onClose} wide>
+      <div className="space-y-4">
+        {/* Provider preset selector */}
+        <Field label="Provider">
+          <div className="grid grid-cols-2 gap-1.5">
+            {AI_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => selectPreset(p.id)}
+                className={cn(
+                  "text-left p-2.5 rounded-lg border text-xs transition-colors",
+                  presetId === p.id ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-300" : "border-border hover:bg-card"
+                )}
+              >
+                <p className="font-medium">{p.name}</p>
+              </button>
+            ))}
+          </div>
+        </Field>
+
+        {/* Docs link */}
+        {preset.docsUrl && (
+          <div className="text-xs text-muted-foreground p-2 rounded-lg bg-background border border-border">
+            Get your API key from:{" "}
+            <a href={preset.docsUrl} target="_blank" className="text-emerald-300 hover:underline">
+              {preset.docsUrl}
+            </a>
+          </div>
+        )}
+
+        {/* Label */}
+        <Field label="Label (for your reference)">
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder={preset.name === "Custom / Self-hosted (vLLM, Ollama, etc.)" ? "e.g. My vLLM server" : preset.name}
+            className={inputCls}
+          />
+        </Field>
+
+        {/* Base URL */}
+        <Field label="Base URL">
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder="https://your-server.com/v1"
+            className={cn(inputCls, "font-mono text-xs")}
+            disabled={presetId !== "custom"}
+          />
+          {presetId === "custom" && (
+            <p className="text-[10px] text-muted-foreground mt-1">
+              For vLLM: <code>http://localhost:8000/v1</code> · For Ollama: <code>http://localhost:11434/v1</code>
+            </p>
+          )}
+        </Field>
+
+        {/* Model picker */}
+        <Field label="Model">
+          <select
+            value={modelName}
+            onChange={(e) => setModelName(e.target.value)}
+            className={inputCls}
+          >
+            {preset.models.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+            {presetId === "custom" && (
+              <option value="custom">Type custom model name</option>
+            )}
+          </select>
+          {presetId === "custom" && (
+            <input
+              value={modelName}
+              onChange={(e) => setModelName(e.target.value)}
+              placeholder="model name"
+              className={cn(inputCls, "font-mono text-xs mt-2")}
+            />
+          )}
+          {selectedModel && (
+            <div className="flex gap-1 mt-2">
+              {selectedModel.capabilities.chat && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">💬 Chat</span>}
+              {selectedModel.capabilities.image && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">📸 Image</span>}
+              {selectedModel.capabilities.audio && <span className="text-[10px] px-1.5 py-0.5 rounded bg-card border border-border">🎙️ Audio</span>}
+            </div>
+          )}
+        </Field>
+
+        {/* API Key */}
         <Field label="API Key">
           <div className="relative">
             <input
@@ -2272,17 +2521,42 @@ function AddAiProviderModal({ slug, onClose, onAdded }: { slug: string; onClose:
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               className={inputCls}
-              placeholder="sk-..."
+              placeholder={preset.keyPrefix ? `${preset.keyPrefix}...` : "your-api-key"}
             />
             <button onClick={() => setShowKey(!showKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
               {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
             </button>
           </div>
-          <p className="text-[10px] text-muted-foreground mt-1">Encrypted at rest. Never shown again. Never in logs.</p>
+          <p className="text-[10px] text-muted-foreground mt-1">Encrypted at rest (AES-256-GCM). Never shown again. Never in logs.</p>
         </Field>
-        <button onClick={handleSubmit} disabled={loading || !label || !apiKey} className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm">
-          {loading ? "Adding…" : "Add provider"}
-        </button>
+
+        {/* Test result */}
+        {testResult && (
+          <div className={cn(
+            "p-3 rounded-lg text-xs",
+            testResult.ok ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-300" : "bg-rose-500/10 border border-rose-500/20 text-rose-300"
+          )}>
+            {testResult.message}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <button
+            onClick={handleTest}
+            disabled={testing || !apiKey || !baseUrl}
+            className="flex-1 border border-border hover:border-emerald-500/30 text-sm py-2.5 rounded-xl transition-colors"
+          >
+            {testing ? "Testing…" : "🧪 Test connection"}
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={loading || !apiKey}
+            className="flex-1 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+          >
+            {loading ? "Saving…" : testResult?.ok ? "✓ Save & close" : "Save provider"}
+          </button>
+        </div>
       </div>
     </Modal>
   );
@@ -2312,6 +2586,145 @@ function TeamPage({ slug, staffEmail }: { slug: string; staffEmail: string }) {
 // ─────────────────────────────────────────────────────────────
 // Billing page — current plan, usage, invoices, upgrade
 // ─────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────
+// Payments settings — UPI ID for collecting customer payments
+// ─────────────────────────────────────────────────────────────
+
+function PaymentsPage({ slug }: { slug: string }) {
+  const [settings, setSettings] = useState<{ upiId: string | null; upiName: string | null; razorpayConfigured: boolean; razorpayCustomerId: string | null } | null>(null);
+  const [upiId, setUpiId] = useState("");
+  const [upiName, setUpiName] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch(`/api/payments/settings?tenantSlug=${slug}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setSettings(d.settings);
+        setUpiId(d.settings?.upiId || "");
+        setUpiName(d.settings?.upiName || "");
+      });
+  }, [slug]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/payments/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantSlug: slug, upiId, upiName }),
+      });
+      if (res.ok) {
+        toast.success("Payment settings saved");
+        const d = await fetch(`/api/payments/settings?tenantSlug=${slug}`).then((r) => r.json());
+        setSettings(d.settings);
+      } else {
+        const d = await res.json();
+        toast.error(d.error || "Failed to save");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="p-4 space-y-4 max-w-2xl">
+      {/* UPI settings */}
+      <div className="p-5 rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-sm font-medium">UPI ID for collecting payments</p>
+            <p className="text-xs text-muted-foreground">Providers generate payment links using this UPI ID</p>
+          </div>
+          {settings?.upiId ? (
+            <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Active
+            </span>
+          ) : (
+            <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300">Not set</span>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <Field label="UPI ID">
+            <input
+              value={upiId}
+              onChange={(e) => setUpiId(e.target.value)}
+              placeholder="businessname@okhdfcbank"
+              className={cn(inputCls, "font-mono")}
+            />
+          </Field>
+          <Field label="Display name (shown to customer)">
+            <input
+              value={upiName}
+              onChange={(e) => setUpiName(e.target.value)}
+              placeholder="Shanti Express"
+              className={inputCls}
+            />
+          </Field>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm px-4"
+          >
+            {saving ? "Saving…" : "Save UPI settings"}
+          </button>
+        </div>
+      </div>
+
+      {/* How it works */}
+      <div className="p-4 rounded-xl border border-border bg-card">
+        <p className="text-sm font-medium mb-3">How UPI payments work</p>
+        <ol className="space-y-2 text-xs text-muted-foreground">
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">1</span>
+            <span>Provider opens a job → taps "💳 Request payment" → enters amount</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">2</span>
+            <span>System generates a UPI deep link (upi://pay?pa=YOUR_UPI&am=AMOUNT...) and sends it to the customer's WhatsApp</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">3</span>
+            <span>Customer taps the link → their UPI app opens (PhonePe/GPay/Paytm/BHIM) → they pay</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">4</span>
+            <span>Customer shares the payment screenshot on WhatsApp</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">5</span>
+            <span>Provider verifies the screenshot → taps "✅ Confirm payment received"</span>
+          </li>
+          <li className="flex gap-2">
+            <span className="w-5 h-5 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center justify-center text-[10px] font-medium flex-shrink-0">6</span>
+            <span>Customer gets a WhatsApp confirmation: "✅ Payment confirmed for #2001"</span>
+          </li>
+        </ol>
+      </div>
+
+      {/* Razorpay (future) */}
+      <div className="p-4 rounded-xl border border-dashed border-border bg-card/50">
+        <div className="flex items-center justify-between mb-2">
+          <div>
+            <p className="text-sm font-medium">Razorpay Payment Links (coming soon)</p>
+            <p className="text-xs text-muted-foreground">Auto-verified payments — no manual screenshot check needed</p>
+          </div>
+          {settings?.razorpayConfigured ? (
+            <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300">Available</span>
+          ) : (
+            <span className="text-xs px-2 py-1 rounded-full bg-zinc-500/15 text-zinc-400">Platform not configured</span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          When enabled by the platform owner, you'll be able to generate Razorpay Payment Links instead of UPI deep links.
+          Razorpay auto-verifies the payment via webhook — no screenshot needed, no manual confirmation.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function BillingPage({ slug }: { slug: string }) {
   const [data, setData] = useState<{
