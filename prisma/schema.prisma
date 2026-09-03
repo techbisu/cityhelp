@@ -1,0 +1,393 @@
+// CityHelp — Multi-tenant SaaS for WhatsApp-based local delivery/service businesses
+// Prisma schema (SQLite for dev; production target: Supabase Postgres)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────
+// PLATFORM LEVEL
+// ─────────────────────────────────────────────────────────────
+
+model Plan {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  priceMonthly    Int      @default(0) // in paise (₹999 → 99900)
+  currency        String   @default("INR")
+  limitCities     Int      @default(1)
+  limitOrders     Int      @default(100) // per month
+  limitWhatsApp   Int      @default(1)
+  limitSeats      Int      @default(2)
+  featureWorkflow Boolean  @default(false)
+  featureEmail    Boolean  @default(false)
+  featureApi      Boolean  @default(false)
+  featureCustomDomain Boolean @default(false)
+  isActive        Boolean  @default(true)
+  tenants         Tenant[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Tenant {
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  status          String   @default("trial") // trial | active | suspended | cancelled
+  planId          String
+  plan            Plan     @relation(fields: [planId], references: [id])
+  // overrides
+  overrideCities  Int?
+  overrideOrders  Int?
+  overrideWhatsApp Int?
+  overrideSeats   Int?
+  trialEndsAt     DateTime?
+  suspendedAt     DateTime?
+  suspendedReason String?
+  // branding
+  accentColor     String   @default("#10b981") // emerald
+  logoUrl         String?
+  // whatsapp
+  waPhoneNumberId String?
+  waBusinessName  String?
+  waVerified      Boolean  @default(false)
+  // email
+  resendApiKeyMask String? // last 4 only
+  // timestamps
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cities          City[]
+  providers       Provider[]
+  customers       Customer[]
+  services        Service[]
+  orders          Order[]
+  staff           Staff[]
+  aiProviders     AiProvider[]
+  aiTaskRoutes    AiTaskRoute[]
+  auditLogs       AuditLog[]
+  notifications   NotificationSetting?
+  activity        Activity[]
+  botSessions     BotSession[]
+}
+
+model City {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  name        String
+  state       String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  providers   Provider[]
+  orders      Order[]
+  @@unique([tenantId, name])
+}
+
+// ─────────────────────────────────────────────────────────────
+// STAFF / AUTH (Tenant admins + super admin)
+// ─────────────────────────────────────────────────────────────
+
+model Staff {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  email         String
+  name          String
+  role          String   @default("admin") // owner | admin | staff
+  permissions   String   @default("full")  // full | orders_only
+  passwordHash  String
+  twoFactorSecret String?
+  twoFactorEnabled Boolean @default(false)
+  lastLoginAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  auditLogs     AuditLog[]
+  @@unique([tenantId, email])
+}
+
+model SuperAdmin {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  name            String
+  passwordHash    String
+  twoFactorSecret String?
+  twoFactorEnabled Boolean @default(true)
+  lastLoginAt     DateTime?
+  createdAt       DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// PROVIDERS
+// ─────────────────────────────────────────────────────────────
+
+model Provider {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cityId        String
+  city          City     @relation(fields: [cityId], references: [id])
+  name          String
+  phone         String
+  pinHash       String
+  serviceIds    String   @default("[]") // JSON array of service IDs
+  zone          String?  // area/zone name
+  isOnline      Boolean  @default(false)
+  isActive      Boolean  @default(true)
+  rating        Float    @default(5.0)
+  jobsDone      Int      @default(0)
+  earnings      Int      @default(0) // paise
+  avgAcceptSec  Int      @default(0)
+  pinAttempts   Int      @default(0)
+  pinLockedUntil DateTime?
+  pushSubscription String? // web push subscription JSON
+  lastSeenAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  acceptedOrders Order[] @relation("AcceptedOrders")
+  rejectedOrders Order[] @relation("RejectedOrders")
+  broadcasts    OrderBroadcast[]
+  activity      Activity[]
+  @@unique([tenantId, phone])
+}
+
+// ─────────────────────────────────────────────────────────────
+// CUSTOMERS
+// ─────────────────────────────────────────────────────────────
+
+model Customer {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  phone         String
+  name          String?
+  language      String   @default("en")
+  addresses     String   @default("[]") // JSON array of {label, text, lat, lng, area}
+  isBlocked     Boolean  @default(false)
+  totalOrders   Int      @default(0)
+  lifetimeValue Int      @default(0) // paise
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  orders        Order[]
+  botSessions   BotSession[]
+  @@unique([tenantId, phone])
+}
+
+// ─────────────────────────────────────────────────────────────
+// SERVICES
+// ─────────────────────────────────────────────────────────────
+
+model Service {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  key           String   // cake | grocery | chicken | parcel | ride | repair | team | custom
+  kind          String   @default("order") // order | book | custom | team
+  icon          String   @default("📦")
+  orderIdx      Int      @default(0)
+  isActive      Boolean  @default(true)
+  // per-language label + options
+  labels        String   @default("{}") // {"en":"Birthday Cake","hi":"जन्मदिन का केक"}
+  questions     String   @default("{}") // per-lang question templates
+  options       String   @default("{}") // per-lang list options
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  orders        Order[]
+  @@unique([tenantId, key])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ORDERS
+// ─────────────────────────────────────────────────────────────
+
+model Order {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cityId        String
+  city          City     @relation(fields: [cityId], references: [id])
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id])
+  serviceId     String?
+  service       Service? @relation(fields: [serviceId], references: [id])
+  code          String   // human-friendly #1024
+  status        String   @default("new") // new | broadcast | quoted | accepted | picked | delivered | cancelled | escalated
+  kind          String   @default("order") // order | book | custom
+  // payload
+  items         String   @default("[]") // JSON array of items
+  description   String?  // free text (book/custom)
+  preferredShop String?
+  timing        String?
+  addressText   String?
+  addressArea   String?
+  addressLat    Float?
+  addressLng    Float?
+  mediaUrls     String   @default("[]") // JSON array of S3/storage URLs
+  voiceTranscript String?
+  // assignment
+  acceptedById  String?
+  acceptedBy    Provider? @relation("AcceptedOrders", fields: [acceptedById], references: [id])
+  rejectedBy    Provider[] @relation("RejectedOrders")
+  acceptedAt    DateTime?
+  pickedAt      DateTime?
+  deliveredAt   DateTime?
+  escalatedAt   DateTime?
+  cancelledAt   DateTime?
+  cancelReason  String?
+  // pricing (for quotes / manual jobs)
+  quoteAmount   Int?     // paise
+  quoteDelivery String?  // estimated delivery text
+  quoteStatus   String?  // pending | accepted | declined | negotiated
+  // misc
+  source        String   @default("bot") // bot | manual
+  activity      Activity[]
+  broadcasts    OrderBroadcast[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@unique([tenantId, code])
+}
+
+model OrderBroadcast {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  providerId  String
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  status      String   @default("pending") // pending | accepted | rejected | timeout
+  sentAt      DateTime @default(now())
+  respondedAt DateTime?
+  @@unique([orderId, providerId])
+}
+
+// ─────────────────────────────────────────────────────────────
+// AI BYOK
+// ─────────────────────────────────────────────────────────────
+
+model AiProvider {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  label         String
+  baseUrl       String
+  apiKeyCipher  String   // encrypted at rest
+  apiKeyMask    String   // ••••1234
+  supportsChat  Boolean  @default(true)
+  supportsImage Boolean  @default(false)
+  supportsAudio Boolean  @default(false)
+  testedAt      DateTime?
+  testStatus    String   @default("untested") // untested | ok | fail
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  taskRoutes    AiTaskRoute[]
+  @@unique([tenantId, label])
+}
+
+model AiTaskRoute {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  task          String   @unique // extract_grocery | read_photo | transcribe_voice | parse_loose | classify_custom | free_chat
+  providerId    String?
+  provider      AiProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  modelName     String?
+  fallbackProviderId String?
+  fallbackModel String?
+  usageCalls    Int      @default(0)
+  usageTokens   Int      @default(0)
+  usageToday    Int      @default(0)
+  lastUsedAt    DateTime?
+}
+
+model AiUsageLog {
+  id            String   @id @default(cuid())
+  tenantId      String
+  task          String
+  providerLabel String
+  modelName     String
+  tokensIn      Int      @default(0)
+  tokensOut     Int      @default(0)
+  latencyMs     Int      @default(0)
+  success       Boolean  @default(true)
+  error         String?
+  createdAt     DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// BOT SESSIONS (WhatsApp conversation state)
+// ─────────────────────────────────────────────────────────────
+
+model BotSession {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  customerId    String?
+  customer      Customer? @relation(fields: [customerId], references: [id])
+  phone         String
+  waMessageId   String?  @unique // dedup
+  state         String   @default("language") // language | menu | service_draft | address | confirm | done
+  draftService  String?
+  draftItems    String   @default("[]")
+  draftTiming   String?
+  draftShop     String?
+  draftAddress  String?
+  draftLat      Float?
+  draftLng      Float?
+  lastMessageAt DateTime @default(now())
+  nudgeSentAt   DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  @@unique([tenantId, phone])
+}
+
+// ─────────────────────────────────────────────────────────────
+// ACTIVITY / AUDIT
+// ─────────────────────────────────────────────────────────────
+
+model Activity {
+  id          String   @id @default(cuid())
+  tenantId    String
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderId     String?
+  order       Order?   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  providerId  String?
+  provider    Provider? @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  actor       String   // system | bot | provider:{id} | staff:{id} | superadmin
+  action      String   // created | broadcast | accepted | rejected | timeout | picked | delivered | escalated | assigned | cancelled | quoted | quote_accepted
+  detail      String?
+  createdAt   DateTime @default(now())
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  tenantId    String?
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staffId     String?
+  staff       Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  actor       String   // superadmin | staff:{id} | system
+  action      String   // key_change | plan_change | impersonation_start | impersonation_end | manual_order | export | suspend | restore | assign
+  entity      String?
+  entityId    String?
+  detail      String?
+  ipAddress   String?
+  createdAt   DateTime @default(now())
+}
+
+// ─────────────────────────────────────────────────────────────
+// NOTIFICATION SETTINGS
+// ─────────────────────────────────────────────────────────────
+
+model NotificationSetting {
+  id              String   @id @default(cuid())
+  tenantId        String   @unique
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  escalationPush  Boolean  @default(true)
+  escalationEmail Boolean  @default(false)
+  dailyDigest     Boolean  @default(true)
+  weeklyReport    Boolean  @default(false)
+  limitWarning    Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+}

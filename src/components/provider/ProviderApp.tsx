@@ -1,0 +1,978 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import { useApp } from "@/stores/app";
+import { cn, formatINR, timeAgo, formatDuration, mapsLink, safeParse, ORDER_STATUS } from "@/lib/utils";
+import { ArrowLeft, Phone, PhoneOff, Check, X, Package, MapPin, Plus, History, Bell, Battery, Volume2, Settings, ChevronRight, Clock, Star } from "lucide-react";
+import { toast } from "sonner";
+
+interface ProviderInfo {
+  id: string;
+  name: string;
+  phone: string;
+  tenantSlug: string;
+  tenantName: string;
+  tenantAccent: string;
+  cityId: string;
+  cityName: string;
+  zone: string;
+  isOnline: boolean;
+  rating: number;
+  jobsDone: number;
+  earnings: number;
+}
+
+interface OrderItem { name: string; qty?: string | number }
+
+interface Job {
+  id: string;
+  code: string;
+  status: string;
+  kind: string;
+  items: string;
+  description: string | null;
+  preferredShop: string | null;
+  timing: string | null;
+  addressText: string | null;
+  addressArea: string | null;
+  addressLat: number | null;
+  addressLng: number | null;
+  customer: { name: string | null; phone: string; language: string };
+  service: { icon: string; key: string; labels: string } | null;
+  city: { name: string };
+  acceptedBy: { name: string; phone: string; zone: string } | null;
+  quoteAmount: number | null;
+  createdAt: string;
+  acceptedAt: string | null;
+}
+
+export function ProviderApp() {
+  const setView = useApp((s) => s.setView);
+  const providerId = useApp((s) => s.providerId);
+  const providerTenantSlug = useApp((s) => s.providerTenantSlug);
+  const setProvider = useApp((s) => s.setProvider);
+  const clearProvider = useApp((s) => s.clearProvider);
+
+  const [provider, setProviderInfo] = useState<ProviderInfo | null>(null);
+  const [activeJobs, setActiveJobs] = useState<Job[]>([]);
+  const [pastJobs, setPastJobs] = useState<Job[]>([]);
+  const [customRequests, setCustomRequests] = useState<Job[]>([]);
+  const [incomingJob, setIncomingJob] = useState<Job | null>(null);
+  const [view, setLocalView] = useState<"home" | "job" | "custom" | "new" | "history" | "onboard">("home");
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+
+  // Login form state
+  const [loginPhone, setLoginPhone] = useState("+919811100001");
+  const [loginPin, setLoginPin] = useState("1234");
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [loginLoading, setLoginLoading] = useState(false);
+
+  // ── If logged in, fetch provider info ─────────────────
+  const refresh = useCallback(async () => {
+    if (!providerId) return;
+    const res = await fetch(`/api/providers/${providerId}?jobs=true`);
+    if (!res.ok) {
+      clearProvider();
+      return;
+    }
+    const data = await res.json();
+    // Map tenant relation fields to flat fields expected by the provider state
+    const p = data.provider;
+    const tenantData = p.tenant || {};
+    setProviderInfo({
+      ...p,
+      tenantSlug: tenantData.slug || p.tenantSlug,
+      tenantName: tenantData.name || p.tenantName,
+      tenantAccent: tenantData.accentColor || p.tenantAccent,
+      cityName: p.city?.name || p.cityName,
+    });
+    setActiveJobs(data.activeJobs);
+    setPastJobs(data.pastJobs);
+    setCustomRequests(data.customRequests);
+  }, [providerId, clearProvider]);
+
+  useEffect(() => {
+    if (providerId) {
+      refresh();
+      const id = setInterval(refresh, 4000);
+      return () => clearInterval(id);
+    }
+  }, [providerId, refresh]);
+
+  // ── Poll for incoming broadcast jobs ──────────────────
+  useEffect(() => {
+    if (!provider || !provider.isOnline || !provider.tenantSlug) return;
+    let cancelled = false;
+    async function checkIncoming() {
+      if (cancelled || !provider || !provider.tenantSlug) return;
+      try {
+        const res = await fetch(`/api/orders?tenantSlug=${provider.tenantSlug}&status=broadcast`);
+        const data = await res.json();
+        const myBroadcasts = (data.orders as Job[]).filter((o) => {
+          // Only show orders in my city, with my service
+          if (o.city.name !== provider.cityName) return false;
+          // Check if this provider is in the broadcast list — for demo, accept all broadcast orders in my city
+          return true;
+        });
+        if (myBroadcasts.length > 0 && !incomingJob) {
+          // Pick the newest
+          setIncomingJob(myBroadcasts[0]);
+        }
+      } catch {
+        // silent
+      }
+    }
+    checkIncoming();
+    const id = setInterval(checkIncoming, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [provider, incomingJob]);
+
+  // ── Login ─────────────────────────────────────────────
+  async function handleLogin() {
+    setLoginLoading(true);
+    setLoginError(null);
+    try {
+      const res = await fetch("/api/providers/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantSlug: providerTenantSlug || "shanti", phone: loginPhone, pin: loginPin }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.message || data.error || "Login failed");
+        return;
+      }
+      setProvider(data.provider.id, data.provider.tenantSlug);
+      setProviderInfo(data.provider);
+      setLocalView("onboard");
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function toggleOnline() {
+    if (!provider) return;
+    const newOnline = !provider.isOnline;
+    await fetch("/api/providers", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: provider.id, isOnline: newOnline }),
+    });
+    setProviderInfo({ ...provider, isOnline: newOnline });
+    if (newOnline) toast.success("You're now online — ready to receive jobs");
+    else toast.info("You're now offline");
+  }
+
+  async function handleAccept() {
+    if (!incomingJob || !provider) return;
+    const res = await fetch(`/api/orders/${incomingJob.id}/accept`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: provider.id }),
+    });
+    const data = await res.json();
+    if (res.status === 409) {
+      toast.error("Already taken by another provider");
+      setIncomingJob(null);
+      return;
+    }
+    toast.success(`✅ Order #${incomingJob.code} accepted!`);
+    setIncomingJob(null);
+    refresh();
+  }
+
+  function handleReject() {
+    if (!incomingJob || !provider) return;
+    fetch(`/api/orders/${incomingJob.id}/reject`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerId: provider.id }),
+    });
+    toast.info("Rejected — waiting for next job");
+    setIncomingJob(null);
+  }
+
+  async function updateJobStatus(job: Job, status: "picked" | "delivered") {
+    await fetch(`/api/orders/${job.id}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, providerId: provider?.id }),
+    });
+    toast.success(status === "picked" ? "📦 Marked as picked up" : "✅ Marked as delivered");
+    refresh();
+    setSelectedJob(null);
+    setLocalView("home");
+  }
+
+  // ── Render: login screen ──────────────────────────────
+  if (!providerId || !provider) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <button
+            onClick={() => setView("home")}
+            className="text-muted-foreground hover:text-foreground text-sm mb-6 flex items-center gap-1"
+          >
+            <ArrowLeft className="w-4 h-4" /> Back
+          </button>
+
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mx-auto mb-3">
+              <Package className="w-8 h-8 text-emerald-400" />
+            </div>
+            <h1 className="text-xl font-semibold">Provider Login</h1>
+            <p className="text-xs text-muted-foreground mt-1">Enter your phone and 4-digit PIN</p>
+          </div>
+
+          <div className="space-y-3">
+            <div>
+              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Phone</label>
+              <input
+                value={loginPhone}
+                onChange={(e) => setLoginPhone(e.target.value)}
+                className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40"
+                placeholder="+91..."
+              />
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">4-digit PIN</label>
+              <input
+                value={loginPin}
+                onChange={(e) => setLoginPin(e.target.value)}
+                maxLength={4}
+                inputMode="numeric"
+                className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm tracking-[0.5em] outline-none focus:border-emerald-500/40 font-mono"
+                placeholder="••••"
+              />
+            </div>
+            {loginError && (
+              <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">
+                {loginError}
+              </div>
+            )}
+            <button
+              onClick={handleLogin}
+              disabled={loginLoading || !loginPhone || !loginPin}
+              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm transition-colors"
+            >
+              {loginLoading ? "Signing in…" : "Sign in"}
+            </button>
+          </div>
+
+          <div className="mt-6 p-3 rounded-xl bg-card/60 border border-border/60 text-xs text-muted-foreground">
+            <p className="font-medium text-foreground mb-1">Demo providers</p>
+            <p>+919811100001 · +919811100002 · +919822200001</p>
+            <p className="mt-1">PIN: <span className="font-mono">1234</span></p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Render: onboarding ────────────────────────────────
+  if (view === "onboard") {
+    return <ProviderOnboarding provider={provider} onDone={() => setLocalView("home")} />;
+  }
+
+  // ── Render: incoming call screen (full-screen takeover) ─
+  if (incomingJob) {
+    return <IncomingCallScreen job={incomingJob} onAccept={handleAccept} onReject={handleReject} />;
+  }
+
+  // ── Render: job detail ────────────────────────────────
+  if (view === "job" && selectedJob) {
+    return (
+      <JobDetail
+        job={selectedJob}
+        onBack={() => { setLocalView("home"); setSelectedJob(null); }}
+        onUpdate={(s) => updateJobStatus(selectedJob, s)}
+      />
+    );
+  }
+
+  // ── Render: new manual job ────────────────────────────
+  if (view === "new") {
+    return (
+      <NewJobScreen
+        provider={provider}
+        onBack={() => setLocalView("home")}
+        onCreated={() => { setLocalView("home"); refresh(); }}
+      />
+    );
+  }
+
+  if (view === "history") {
+    return <HistoryScreen jobs={pastJobs} onBack={() => setLocalView("home")} />;
+  }
+
+  if (view === "custom") {
+    return <CustomRequestsScreen jobs={customRequests} provider={provider} onBack={() => setLocalView("home")} onSent={() => { setLocalView("home"); refresh(); }} />;
+  }
+
+  // ── Render: home ──────────────────────────────────────
+  return (
+    <div className="min-h-screen bg-background pb-20">
+      {/* Header */}
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center justify-between">
+          <button onClick={() => setView("home")} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div className="text-center">
+            <p className="text-[11px] text-muted-foreground leading-none">{provider.tenantName}</p>
+            <p className="text-xs font-medium mt-0.5">{provider.cityName} · {provider.zone}</p>
+          </div>
+          <button onClick={() => clearProvider()} className="text-muted-foreground hover:text-foreground text-xs">
+            Logout
+          </button>
+        </div>
+      </header>
+
+      <div className="px-4 py-5 space-y-5 max-w-md mx-auto">
+        {/* Online toggle */}
+        <div className={cn(
+          "rounded-2xl p-5 border transition-colors",
+          provider.isOnline ? "bg-emerald-500/10 border-emerald-500/30" : "bg-card border-border"
+        )}>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Status</p>
+              <p className={cn("text-lg font-semibold mt-0.5", provider.isOnline ? "text-emerald-300" : "text-zinc-400")}>
+                {provider.isOnline ? "Online" : "Offline"}
+              </p>
+            </div>
+            <button
+              onClick={toggleOnline}
+              className={cn(
+                "relative w-14 h-8 rounded-full transition-colors",
+                provider.isOnline ? "bg-emerald-500" : "bg-zinc-700"
+              )}
+              aria-label="Toggle online"
+            >
+              <span className={cn(
+                "absolute top-1 w-6 h-6 rounded-full bg-white transition-transform",
+                provider.isOnline ? "translate-x-7" : "translate-x-1"
+              )} />
+            </button>
+          </div>
+          {provider.isOnline && (
+            <p className="text-xs text-emerald-300/80 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-live-dot" />
+              Listening for jobs in {provider.zone}
+            </p>
+          )}
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-3 gap-2">
+          <StatBox label="Today" value={String(activeJobs.length)} />
+          <StatBox label="Total jobs" value={String(provider.jobsDone)} />
+          <StatBox label="Earnings" value={formatINR(provider.earnings)} />
+        </div>
+
+        {/* Rating */}
+        <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border">
+          <div className="flex items-center gap-2">
+            <Star className="w-4 h-4 fill-amber-400 text-amber-400" />
+            <span className="text-sm font-medium">{provider.rating.toFixed(1)}</span>
+            <span className="text-xs text-muted-foreground">rating</span>
+          </div>
+          <span className="text-xs text-muted-foreground">Avg accept: {formatDuration(18)}</span>
+        </div>
+
+        {/* Quick actions */}
+        <div className="grid grid-cols-3 gap-2">
+          <QuickAction icon={Plus} label="New job" onClick={() => setLocalView("new")} />
+          <QuickAction icon={Bell} label="Requests" badge={customRequests.length} onClick={() => setLocalView("custom")} />
+          <QuickAction icon={History} label="History" onClick={() => setLocalView("history")} />
+        </div>
+
+        {/* Active jobs */}
+        <div>
+          <h3 className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Active jobs</h3>
+          {activeJobs.length === 0 ? (
+            <EmptyState icon={Package} title="No active jobs" desc="New jobs will appear here" />
+          ) : (
+            <div className="space-y-2">
+              {activeJobs.map((job) => (
+                <JobCard key={job.id} job={job} onClick={() => { setSelectedJob(job); setLocalView("job"); }} />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────
+// Sub-components
+// ─────────────────────────────────────────────────────────────
+
+function StatBox({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="p-3 rounded-xl bg-card border border-border">
+      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</p>
+      <p className="text-lg font-semibold tnum mt-0.5">{value}</p>
+    </div>
+  );
+}
+
+function QuickAction({ icon: Icon, label, onClick, badge }: { icon: typeof Plus; label: string; onClick: () => void; badge?: number }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative p-3 rounded-xl bg-card border border-border hover:border-emerald-500/30 transition-colors flex flex-col items-center gap-1.5"
+    >
+      <Icon className="w-5 h-5 text-muted-foreground" />
+      <span className="text-[11px] text-muted-foreground">{label}</span>
+      {badge && badge > 0 && (
+        <span className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-amber-500 text-zinc-950 text-[10px] font-semibold flex items-center justify-center">
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function EmptyState({ icon: Icon, title, desc }: { icon: typeof Plus; title: string; desc: string }) {
+  return (
+    <div className="p-6 rounded-xl border border-dashed border-border/60 text-center">
+      <Icon className="w-6 h-6 text-muted-foreground mx-auto mb-2 opacity-50" />
+      <p className="text-sm font-medium">{title}</p>
+      <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
+    </div>
+  );
+}
+
+function JobCard({ job, onClick }: { job: Job; onClick: () => void }) {
+  const items = safeParse<OrderItem[]>(job.items, []);
+  const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
+  const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "Order";
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left p-3 rounded-xl bg-card border border-border hover:border-emerald-500/30 transition-colors"
+    >
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs font-medium">#{job.code}</span>
+        <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full", ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.bg, ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.color)}>
+          {ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.label || job.status}
+        </span>
+      </div>
+      <p className="text-sm font-medium mb-1">{svcName}</p>
+      {items.length > 0 && <p className="text-xs text-muted-foreground">{items.length} item(s) · {items[0]?.name}…</p>}
+      {job.description && <p className="text-xs text-muted-foreground truncate">{job.description}</p>}
+      <div className="flex items-center justify-between mt-2">
+        <span className="text-[11px] text-muted-foreground flex items-center gap-1">
+          <MapPin className="w-3 h-3" /> {job.addressArea || "—"}
+        </span>
+        <ChevronRight className="w-4 h-4 text-muted-foreground" />
+      </div>
+    </button>
+  );
+}
+
+function IncomingCallScreen({ job, onAccept, onReject }: { job: Job; onAccept: () => void; onReject: () => void }) {
+  const [seconds, setSeconds] = useState(45);
+  const items = safeParse<OrderItem[]>(job.items, []);
+  const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
+  const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "New Job";
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSeconds((s) => {
+        if (s <= 1) {
+          clearInterval(id);
+          onReject();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [onReject]);
+
+  // Vibrate if supported
+  useEffect(() => {
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      navigator.vibrate([400, 200, 400, 200, 400]);
+      const id = setInterval(() => navigator.vibrate([400, 200, 400, 200, 400]), 1500);
+      return () => clearInterval(id);
+    }
+  }, []);
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gradient-to-b from-zinc-900 via-zinc-950 to-black flex flex-col items-center justify-between p-6 overflow-hidden">
+      {/* Pulsing rings background */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="absolute w-64 h-64 rounded-full border-2 border-emerald-500/40 animate-ring-pulse" />
+        <div className="absolute w-64 h-64 rounded-full border-2 border-emerald-500/40 animate-ring-pulse-2" />
+        <div className="absolute w-64 h-64 rounded-full border-2 border-emerald-500/40 animate-ring-pulse-3" />
+      </div>
+
+      {/* Top: caller info */}
+      <div className="relative z-10 text-center pt-8">
+        <p className="text-[11px] uppercase tracking-[0.2em] text-emerald-400 mb-2">Incoming Job</p>
+        <h1 className="text-3xl font-bold text-white mb-1">{svcName}</h1>
+        <p className="text-zinc-400 text-sm">Order #{job.code} · {job.city.name}</p>
+        <p className="text-zinc-500 text-xs mt-2">
+          {job.customer.name || job.customer.phone}
+        </p>
+      </div>
+
+      {/* Middle: job summary */}
+      <div className="relative z-10 w-full max-w-sm bg-zinc-900/80 backdrop-blur-xl border border-white/10 rounded-2xl p-4 space-y-2 animate-scale-in">
+        {items.length > 0 && (
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Items</p>
+            <p className="text-sm text-white">
+              {items.slice(0, 3).map((it) => it.name).join(", ")}
+              {items.length > 3 && ` +${items.length - 3} more`}
+            </p>
+          </div>
+        )}
+        {job.description && (
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Description</p>
+            <p className="text-sm text-white line-clamp-2">{job.description}</p>
+          </div>
+        )}
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Address</p>
+            <p className="text-sm text-white">{job.addressArea || job.addressText || "—"}</p>
+          </div>
+          <div>
+            <p className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1">Timing</p>
+            <p className="text-sm text-white">{job.timing || "ASAP"}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom: countdown + actions */}
+      <div className="relative z-10 w-full max-w-sm space-y-4 pb-4">
+        <div className="text-center">
+          <p className="text-[11px] text-zinc-500 mb-1">Auto-reject in</p>
+          <p className={cn("text-2xl font-bold tnum", seconds < 10 ? "text-rose-400" : "text-white")}>
+            {seconds}s
+          </p>
+        </div>
+
+        <div className="flex items-center justify-center gap-8">
+          <button
+            onClick={onReject}
+            className="flex flex-col items-center gap-2 group"
+            aria-label="Reject"
+          >
+            <div className="w-16 h-16 rounded-full bg-rose-500 hover:bg-rose-400 flex items-center justify-center transition-colors group-active:scale-95">
+              <PhoneOff className="w-7 h-7 text-white" />
+            </div>
+            <span className="text-xs text-zinc-400">Reject</span>
+          </button>
+
+          <button
+            onClick={onAccept}
+            className="flex flex-col items-center gap-2 group"
+            aria-label="Accept"
+          >
+            <div className="w-20 h-20 rounded-full bg-emerald-500 hover:bg-emerald-400 flex items-center justify-center transition-colors group-active:scale-95 shadow-[0_0_30px_rgba(16,185,129,0.4)]">
+              <Check className="w-9 h-9 text-zinc-950" strokeWidth={3} />
+            </div>
+            <span className="text-xs text-emerald-300 font-medium">Accept</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function JobDetail({ job, onBack, onUpdate }: { job: Job; onBack: () => void; onUpdate: (s: "picked" | "delivered") => void }) {
+  const items = safeParse<OrderItem[]>(job.items, []);
+  const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
+  const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "Order";
+  return (
+    <div className="min-h-screen bg-background pb-24">
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div>
+            <p className="text-xs text-muted-foreground">Order #{job.code}</p>
+            <h2 className="text-sm font-medium">{svcName}</h2>
+          </div>
+        </div>
+      </header>
+
+      <div className="px-4 py-4 space-y-4 max-w-md mx-auto">
+        {/* Status */}
+        <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border">
+          <span className="text-xs text-muted-foreground">Current status</span>
+          <span className={cn("text-xs px-2 py-0.5 rounded-full", ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.bg, ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.color)}>
+            {ORDER_STATUS[job.status as keyof typeof ORDER_STATUS]?.label || job.status}
+          </span>
+        </div>
+
+        {/* Customer */}
+        <div className="p-4 rounded-xl bg-card border border-border">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Customer</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">{job.customer.name || "Unknown"}</p>
+              <p className="text-xs text-muted-foreground">{job.customer.phone}</p>
+            </div>
+            <a
+              href={`tel:${job.customer.phone}`}
+              className="w-10 h-10 rounded-full bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center text-emerald-300 hover:bg-emerald-500/25 transition-colors"
+            >
+              <Phone className="w-4 h-4" />
+            </a>
+          </div>
+        </div>
+
+        {/* Items / Description */}
+        {items.length > 0 && (
+          <div className="p-4 rounded-xl bg-card border border-border">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Items ({items.length})</p>
+            <ul className="space-y-1">
+              {items.map((it, i) => (
+                <li key={i} className="text-sm flex items-baseline gap-2">
+                  <span className="text-muted-foreground text-xs">{i + 1}.</span>
+                  <span className="flex-1">{it.name}</span>
+                  {it.qty && <span className="text-xs text-muted-foreground tnum">×{it.qty}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {job.description && (
+          <div className="p-4 rounded-xl bg-card border border-border">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Description</p>
+            <p className="text-sm">{job.description}</p>
+          </div>
+        )}
+
+        {/* Address */}
+        <div className="p-4 rounded-xl bg-card border border-border">
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Address</p>
+          <p className="text-sm">{job.addressText}</p>
+          {job.addressArea && <p className="text-xs text-muted-foreground mt-1">Area: {job.addressArea}</p>}
+          <a
+            href={mapsLink(job.addressLat, job.addressLng, job.addressText)}
+            target="_blank"
+            className="mt-3 inline-flex items-center gap-1.5 text-xs text-emerald-300 hover:text-emerald-200"
+          >
+            <MapPin className="w-3.5 h-3.5" /> Open in Google Maps
+          </a>
+        </div>
+
+        {/* Timing */}
+        {job.timing && (
+          <div className="p-4 rounded-xl bg-card border border-border">
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">Timing</p>
+            <p className="text-sm flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-muted-foreground" /> {job.timing}
+            </p>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-4 bg-background/95 backdrop-blur-xl border-t border-border">
+          <div className="flex gap-2">
+            {job.status === "accepted" && (
+              <button
+                onClick={() => onUpdate("picked")}
+                className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-medium py-3 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                <Package className="w-4 h-4" /> Picked up
+              </button>
+            )}
+            {job.status === "picked" && (
+              <button
+                onClick={() => onUpdate("delivered")}
+                className="flex-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                <Check className="w-4 h-4" /> Delivered
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NewJobScreen({ provider, onBack, onCreated }: { provider: ProviderInfo; onBack: () => void; onCreated: () => void }) {
+  const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [address, setAddress] = useState("");
+  const [price, setPrice] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
+    if (!phone || !description) {
+      toast.error("Phone and description required");
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantSlug: provider.tenantSlug,
+          phone,
+          customerName: name,
+          kind: "custom",
+          description,
+          addressText: address,
+          timing: "ASAP",
+          source: "manual",
+          manualProviderId: provider.id,
+          quoteAmount: price ? parseInt(price, 10) * 100 : 0,
+        }),
+      });
+      const data = await res.json();
+      if (data.order) {
+        toast.success(`✅ Order #${data.order.code} created — customer notified`);
+        onCreated();
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-background pb-24">
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-sm font-medium">New manual job</h2>
+        </div>
+      </header>
+
+      <div className="px-4 py-4 space-y-4 max-w-md mx-auto">
+        <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
+          Customer will instantly get a WhatsApp confirmation with the order code.
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Customer phone *</label>
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+91..." className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Customer name (optional)</label>
+          <input value={name} onChange={(e) => setName(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Description *</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="What does the customer need?" className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40 resize-none" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Address</label>
+          <input value={address} onChange={(e) => setAddress(e.target.value)} className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40" />
+        </div>
+        <div>
+          <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Price (₹)</label>
+          <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="numeric" placeholder="0" className="w-full mt-1 bg-card border border-border rounded-xl px-3 py-2.5 text-sm outline-none focus:border-emerald-500/40 tnum" />
+        </div>
+
+        <button
+          onClick={handleSubmit}
+          disabled={loading || !phone || !description}
+          className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-3 rounded-xl text-sm"
+        >
+          {loading ? "Creating…" : "Create job & notify customer"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryScreen({ jobs, onBack }: { jobs: Job[]; onBack: () => void }) {
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-sm font-medium">Past jobs</h2>
+        </div>
+      </header>
+      <div className="px-4 py-4 space-y-2 max-w-md mx-auto">
+        {jobs.length === 0 ? (
+          <EmptyState icon={History} title="No past jobs yet" desc="Your completed jobs will appear here" />
+        ) : (
+          jobs.map((job) => {
+            const labels = job.service ? safeParse<Record<string, string>>(job.service.labels, {}) : {};
+            const svcName = job.service ? `${job.service.icon} ${labels.en || job.service.key}` : "Order";
+            return (
+              <div key={job.id} className="p-3 rounded-xl bg-card border border-border">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium">#{job.code} · {svcName}</span>
+                  <span className="text-[10px] text-muted-foreground">{timeAgo(job.deliveredAt || job.createdAt)}</span>
+                </div>
+                <p className="text-xs text-muted-foreground">{job.customer.name || job.customer.phone} · {job.addressArea}</p>
+                {job.quoteAmount && <p className="text-xs text-emerald-300 mt-1">{formatINR(job.quoteAmount)}</p>}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CustomRequestsScreen({ jobs, provider, onBack, onSent }: { jobs: Job[]; provider: ProviderInfo; onBack: () => void; onSent: () => void }) {
+  const [quoteFor, setQuoteFor] = useState<Job | null>(null);
+  const [amount, setAmount] = useState("");
+  const [deliveryTime, setDeliveryTime] = useState("");
+
+  async function sendQuote() {
+    if (!quoteFor || !amount) return;
+    const res = await fetch("/api/quotes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId: quoteFor.id, amount: parseInt(amount, 10) * 100, deliveryTime }),
+    });
+    if (res.ok) {
+      toast.success("Quote sent to customer on WhatsApp");
+      setQuoteFor(null);
+      setAmount("");
+      setDeliveryTime("");
+      onSent();
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b border-border/60 bg-card/40 backdrop-blur-xl sticky top-0 z-10">
+        <div className="px-4 py-3 flex items-center gap-3">
+          <button onClick={onBack} className="text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-sm font-medium">Custom requests</h2>
+        </div>
+      </header>
+
+      <div className="px-4 py-4 space-y-2 max-w-md mx-auto">
+        {jobs.length === 0 ? (
+          <EmptyState icon={Bell} title="No custom requests" desc="Unquoted custom orders will appear here" />
+        ) : (
+          jobs.map((job) => (
+            <div key={job.id} className="p-3 rounded-xl bg-card border border-border">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium">#{job.code}</span>
+                <span className="text-[10px] text-muted-foreground">{timeAgo(job.createdAt)}</span>
+              </div>
+              <p className="text-sm mb-2">{job.description}</p>
+              <p className="text-xs text-muted-foreground mb-2">{job.customer.name || job.customer.phone}</p>
+              <div className="flex gap-2">
+                <button className="flex-1 text-xs py-1.5 rounded-lg bg-card border border-border hover:border-emerald-500/30 transition-colors">
+                  💬 Ask question
+                </button>
+                <button
+                  onClick={() => setQuoteFor(job)}
+                  className="flex-1 text-xs py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/20 text-emerald-300 hover:bg-emerald-500/25 transition-colors"
+                >
+                  💰 Send quote
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      {quoteFor && (
+        <div className="fixed inset-0 bg-black/60 z-30 flex items-end sm:items-center justify-center" onClick={() => setQuoteFor(null)}>
+          <div className="bg-card w-full max-w-md rounded-t-2xl sm:rounded-2xl p-5 animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold mb-3">Send quote for #{quoteFor.code}</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Amount (₹)</label>
+                <input value={amount} onChange={(e) => setAmount(e.target.value)} inputMode="numeric" placeholder="0" className="w-full mt-1 bg-background border border-border rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500/40 tnum" />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Delivery time</label>
+                <input value={deliveryTime} onChange={(e) => setDeliveryTime(e.target.value)} placeholder="e.g. in 30 minutes" className="w-full mt-1 bg-background border border-border rounded-xl px-3 py-2 text-sm outline-none focus:border-emerald-500/40" />
+              </div>
+              <button onClick={sendQuote} disabled={!amount} className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm">
+                Send quote
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProviderOnboarding({ provider, onDone }: { provider: ProviderInfo; onDone: () => void }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      icon: Bell,
+      title: "Enable notifications",
+      desc: "We'll alert you loudly when a new job comes in — even when your phone is locked.",
+    },
+    {
+      icon: Battery,
+      title: "Allow unrestricted battery",
+      desc: "Android may kill the app in the background. Go to Settings → Apps → CityHelp → Battery → Unrestricted.",
+    },
+    {
+      icon: Volume2,
+      title: "Test alert",
+      desc: "We'll send a test notification. Make sure your phone is not on silent.",
+    },
+    {
+      icon: Check,
+      title: "All set!",
+      desc: "You're ready to receive jobs. Go online to start.",
+    },
+  ];
+  const Step = steps[step];
+  const Icon = Step.icon;
+
+  return (
+    <div className="min-h-screen bg-background flex flex-col">
+      <header className="border-b border-border/60 px-4 py-3 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">Step {step + 1} of {steps.length}</span>
+        <button onClick={onDone} className="text-xs text-muted-foreground hover:text-foreground">Skip</button>
+      </header>
+      <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+        <div className="w-20 h-20 rounded-2xl bg-emerald-500/15 border border-emerald-500/20 flex items-center justify-center mb-6">
+          <Icon className="w-10 h-10 text-emerald-400" />
+        </div>
+        <h2 className="text-xl font-semibold mb-2">{Step.title}</h2>
+        <p className="text-sm text-muted-foreground max-w-xs leading-relaxed">{Step.desc}</p>
+      </div>
+      <div className="p-4 space-y-2">
+        {step === 0 && (
+          <button onClick={() => { toast.success("🔔 Notification permission requested"); setStep(1); }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+            Allow notifications
+          </button>
+        )}
+        {step === 1 && (
+          <button onClick={() => setStep(2)} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+            Got it — I've set unrestricted battery
+          </button>
+        )}
+        {step === 2 && (
+          <button onClick={() => { toast.success("🔊 Test alert sent — did it ring loudly?", { duration: 4000 }); setStep(3); }} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+            Send test alert
+          </button>
+        )}
+        {step === 3 && (
+          <button onClick={onDone} className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium py-3 rounded-xl text-sm">
+            Start receiving jobs
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
