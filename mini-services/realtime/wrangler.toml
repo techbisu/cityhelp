@@ -1,0 +1,31 @@
+name = "cityhelp-realtime"
+main = "worker.ts"
+compatibility_date = "2024-09-25"
+compatibility_flags = ["nodejs_compat"]
+
+# Free tier: 100,000 requests/day, 10ms CPU per request
+# Always-on (no sleep), global edge (Mumbai PoP included)
+
+# Durable Objects for room-based WebSocket management
+[[durable_objects.bindings]]
+name = "REALTIME_ROOM"
+class_name = "RealtimeRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RealtimeRoom"]
+
+# Environment variables (set via: wrangler secret put BROADCAST_SECRET)
+[vars]
+BROADCAST_SECRET = "set-via-wrangler-secret"
+
+# Deploy: cd mini-services/realtime && wrangler deploy
+#
+# Setup:
+#   1. npm install -g wrangler
+#   2. wrangler login
+#   3. wrangler secret put BROADCAST_SECRET  (enter a random string)
+#   4. wrangler deploy
+#   5. Note the Worker URL (e.g., https://cityhelp-realtime.your-account.workers.dev)
+#   6. Set WS_SERVICE_URL in Vercel to that URL
+#   7. Set BROADCAST_SECRET in Vercel to the same secret

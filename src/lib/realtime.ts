@@ -1,20 +1,20 @@
 /**
  * CityHelp — Realtime broadcast helper
  *
- * Talks to the WebSocket mini-service (mini-services/realtime) via internal HTTP.
- * The WS service broadcasts events to all connected clients (providers/admins).
+ * Talks to the Cloudflare Worker (Durable Objects) for WebSocket fan-out.
+ * The Worker URL is configurable via WS_SERVICE_URL env var.
  *
- * In dev, the WS service runs on port 3003 and is accessed via the gateway with
- * ?XTransformPort=3003. For server-to-server calls, we hit it directly.
+ * Auth: sends Bearer token (BROADCAST_SECRET) so only the Next.js app can broadcast.
  *
  * Events:
  *  - "new_order"      → broadcast to all online providers in a city
  *  - "order_accepted" → broadcast to all providers (so they can dismiss the ring)
  *  - "order_status"   → broadcast to tenant admins (live order feed)
  *  - "escalation"     → broadcast to tenant owner/staff
- *  - "provider_online"/"provider_offline" → broadcast to tenant admins
+ *  - "charges_agreed" → broadcast to the provider who set charges
  */
 const WS_SERVICE_URL = process.env.WS_SERVICE_URL || "http://localhost:3003";
+const BROADCAST_SECRET = process.env.BROADCAST_SECRET || "cityhelp-dev-broadcast-secret";
 
 interface BroadcastEvent {
   type: string;
@@ -24,19 +24,24 @@ interface BroadcastEvent {
 }
 
 /**
- * Broadcast an event to all connected WS clients matching the filter.
- * The WS service handles the actual fan-out.
+ * Broadcast an event to all connected WebSocket clients matching the filter.
  */
 export async function broadcast(event: BroadcastEvent): Promise<void> {
   try {
-    await fetch(`${WS_SERVICE_URL}/broadcast`, {
+    const res = await fetch(`${WS_SERVICE_URL}/broadcast`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${BROADCAST_SECRET}`,
+      },
       body: JSON.stringify(event),
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(3000),
     });
+    if (!res.ok) {
+      console.error(`[Realtime] Broadcast failed: ${res.status}`);
+    }
   } catch {
-    // WS service may not be running in dev — fail silently
+    // Worker may be down — fail silently (polling is the fallback)
   }
 }
 
