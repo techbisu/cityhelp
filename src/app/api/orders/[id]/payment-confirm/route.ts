@@ -45,10 +45,25 @@ export async function POST(
     }
   }
 
-  // Verify provider
+  // Verify provider belongs to same tenant
   const provider = await db.provider.findUnique({ where: { id: providerId }, select: { tenantId: true, name: true } });
   if (!provider || provider.tenantId !== order.tenantId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // CRITICAL: verify the provider confirming is the one who accepted the order
+  if (order.acceptedById !== providerId) {
+    return NextResponse.json({ error: "forbidden", message: "Only the provider who accepted this order can confirm payment" }, { status: 403 });
+  }
+
+  // Idempotency: if already paid, return success
+  if (order.paymentStatus === "paid") {
+    return NextResponse.json({ ok: true, message: "already_paid" });
+  }
+
+  // State check: payment must be in "requested" status
+  if (order.paymentStatus !== "requested") {
+    return NextResponse.json({ error: "invalid_state", message: "Payment must be in 'requested' status to confirm" }, { status: 400 });
   }
 
   // Update payment status

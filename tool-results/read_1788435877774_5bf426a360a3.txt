@@ -1,0 +1,1028 @@
+     1→     1→/**
+     2→     2→ * POST /api/bot/send
+     3→     3→ * Body: { tenantSlug, phone, message?: text, button?: id, location?: {lat,lng}, mediaType?: "voice"|"image" }
+     4→     4→ *
+     5→     5→ * Returns: { replies: BotReply[], session: {...}, order?: {...} }
+     6→     6→ *
+     7→     7→ * BotReply = { kind: "text" | "buttons" | "list", text, buttons?, sections? }
+     8→     8→ *
+     9→     9→ * State machine: language → menu → service_draft → address → confirm → done
+    10→    10→ * Resilient: "cancel"/"menu" anywhere → back to menu. Old button taps → re-show current step.
+    11→    11→ */
+    12→    12→import { NextRequest, NextResponse } from "next/server";
+    13→    13→import { db } from "@/lib/db";
+    14→    14→import { safeParse, reverseGeocodeStub } from "@/lib/utils";
+    15→    15→
+    16→    16→interface BotReply {
+    17→    17→  kind: "text" | "buttons" | "list";
+    18→    18→  text: string;
+    19→    19→  buttons?: Array<{ id: string; label: string }>;
+    20→    20→  sections?: Array<{ title: string; rows: Array<{ id: string; title: string; description?: string }> }>;
+    21→    21→  listTitle?: string;
+    22→    22→  listButton?: string;
+    23→    23→}
+    24→    24→
+    25→    25→const LANGUAGES: Array<{ code: string; label: string; flag: string }> = [
+    26→    26→  { code: "en", label: "English", flag: "🇬🇧" },
+    27→    27→  { code: "hi", label: "हिन्दी", flag: "🇮🇳" },
+    28→    28→];
+    29→    29→
+    30→    30→// ─────────────────────────────────────────────────────────────
+    31→    31→// Helpers
+    32→    32→// ─────────────────────────────────────────────────────────────
+    33→    33→
+    34→    34→function t(tenant: { waBusinessName: string | null }, lang: "en" | "hi", key: string, vars?: Record<string, string>): string {
+    35→    35→  const name = tenant.waBusinessName || "CityHelp";
+    36→    36→  const en: Record<string, string> = {
+    37→    37→    welcome: `Welcome to *${name}*! 👋\nChoose your language:`,
+    38→    38→    menu_title: "What would you like today?",
+    39→    39→    menu_button: "📋 View Menu",
+    40→    40→    ask_cake: "🎂 What cake would you like?\n_Flavor, weight, message_",
+    41→    41→    ask_grocery: "🛒 Send your grocery list — type below, send a voice note, or photo of a handwritten list.",
+    42→    42→    ask_grocery_summary: "Here's your list so far:",
+    43→    43→    ask_grocery_add_more: "Send more items, or tap Done.",
+    44→    44→    ask_chicken: "🍗 What would you like?\n_E.g. 1kg chicken curry cut, 500g mutton_",
+    45→    45→    ask_parcel: "📦 What's the parcel?\n_Contents, pickup point, drop point_",
+    46→    46→    ask_ride: "🚗 Where to?\n_Pickup & drop, e.g. Andheri station to Bandra_",
+    47→    47→    ask_repair: "🧰 What needs repair?\n_E.g. LG AC not cooling, model GL-S0524_",
+    48→    48→    ask_team: "👥 Connecting you to our team. Please describe briefly what you need.",
+    49→    49→    ask_custom: "Please describe what you need — we'll get back with a quote.",
+    50→    50→    ask_shop: "Any preferred shop? (optional)",
+    51→    51→    ask_timing: "When do you need it?",
+    52→    52→    ask_timing_book: "Pick a time slot:",
+    53→    53→    ask_address: "📍 Share your address — send a WhatsApp location pin OR type it with landmark.",
+    54→    54→    ask_address_confirm: "Is *{area}* correct?",
+    55→    55→    confirm_title: "📋 *Order Summary*",
+    56→    56→    confirm_ask: "Confirm your order?",
+    57→    57→    placed: "✅ Order placed! Code *#{code}*\nOur partner will call you in ~10 minutes.",
+    58→    58→    cancelled: "❌ Order cancelled. Type *menu* to start again.",
+    59→    59→    back_to_menu: "↩️ Back to main menu.",
+    60→    60→    nudge: "You have an unfinished order. Continue?",
+    61→    61→    invalid: "Sorry, I didn't understand that. Tap a button below 👇",
+    62→    62→    old_button: "That was from an older message. Here's your current step 👇",
+    63→    63→    voice_received: "🎙️ Voice note received. Processing…",
+    64→    64→    photo_received: "📸 Photo received. Reading the list…",
+    65→    65→    voice_failed: "Couldn't process your voice note. Please type your list, or our team will help.",
+    66→    66→    photo_failed: "Couldn't read the photo. Please type your list, or our team will help.",
+    67→    67→    grocery_done: "Great! Your list is locked in.",
+    68→    68→    ask_more: "Anything else to add? Send more items or tap Done.",
+    69→    69→  };
+    70→    70→  const hi: Record<string, string> = {
+    71→    71→    welcome: `${name} में आपका स्वागत है! 👋\nअपनी भाषा चुनें:`,
+    72→    72→    menu_title: "आज क्या चाहिए?",
+    73→    73→    menu_button: "📋 मेनू देखें",
+    74→    74→    ask_cake: "🎂 आपको कौन सा केक चाहिए?\n_स्वाद, वजन, संदेश_",
+    75→    75→    ask_grocery: "🛒 अपनी किराने की लिस्ट भेजें — टाइप करें, वॉइस नोट, या फोटो।",
+    76→    76→    ask_grocery_summary: "आपकी लिस्ट अब तक:",
+    77→    77→    ask_grocery_add_more: "और आइटम भेजें, या हो गया दबाएं।",
+    78→    78→    ask_chicken: "🍗 क्या चाहिए?\n_जैसे 1kg चिकन करी कट, 500g मटन_",
+    79→    79→    ask_parcel: "📦 पार्सल क्या है?\n_सामग्री, पिकअप, ड्रॉप_",
+    80→    80→    ask_ride: "🚗 कहाँ जाना है?\n_पिकअप और ड्रॉप_",
+    81→    81→    ask_repair: "🧰 क्या रिपेयर करना है?\n_जैसे LG एसी ठंडा नहीं कर रहा_",
+    82→    82→    ask_team: "👥 हमारी टीम से जोड़ रहे हैं। बताइए क्या ज़रूरत है।",
+    83→    83→    ask_custom: "बताइए क्या चाहिए — हम कोटेशन देंगे।",
+    84→    84→    ask_shop: "कोई पसंदीदा दुकान? (वैकल्पिक)",
+    85→    85→    ask_timing: "कब चाहिए?",
+    86→    86→    ask_timing_book: "टाइम स्लॉट चुनें:",
+    87→    87→    ask_address: "📍 पता भेजें — लोकेशन पिन भेजें या टाइप करें।",
+    88→    88→    ask_address_confirm: "क्या *{area}* सही है?",
+    89→    89→    confirm_title: "📋 *ऑर्डर सारांश*",
+    90→    90→    confirm_ask: "ऑर्डर कन्फर्म करें?",
+    91→    91→    placed: "✅ ऑर्डर हो गया! कोड *#{code}*\nहमारा पार्टनर ~10 मिनट में कॉल करेगा।",
+    92→    92→    cancelled: "❌ ऑर्डर रद्द। *मेनू* टाइप करें।",
+    93→    93→    back_to_menu: "↩️ मुख्य मेनू।",
+    94→    94→    nudge: "आपका ऑर्डर अधूरा है। जारी रखें?",
+    95→    95→    invalid: "समझ नहीं आया। नीचे बटन दबाएं 👇",
+    96→    96→    old_button: "वह पुराना था। यह रहा अभी का स्टेप 👇",
+    97→    97→    voice_received: "🎙️ वॉइस नोट मिला। प्रोसेस हो रहा है…",
+    98→    98→    photo_received: "📸 फोटो मिली। लिस्ट पढ़ रहे हैं…",
+    99→    99→    voice_failed: "वॉइस प्रोसेस नहीं हो सकी। कृपया टाइप करें।",
+   100→   100→    photo_failed: "फोटो पढ़ी नहीं जा सकी। कृपया टाइप करें।",
+   101→   101→    grocery_done: "बढ़िया! लिस्ट हो गई।",
+   102→   102→    ask_more: "और कुछ? आइटम भेजें या हो गया दबाएं।",
+   103→   103→  };
+   104→   104→  const dict = lang === "hi" ? hi : en;
+   105→   105→  let s = dict[key] ?? en[key] ?? key;
+   106→   106→  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replace(`{${k}}`, v);
+   107→   107→  return s;
+   108→   108→}
+   109→   109→
+   110→   110→function buildMenuList(tenantId: string, services: Array<{ id: string; key: string; kind: string; icon: string; labels: string }>, lang: "en" | "hi") {
+   111→   111→  const rows = services
+   112→   112→    .filter((s) => s.kind !== "custom" || s.key === "custom")
+   113→   113→    .sort((a, b) => {
+   114→   114→      const order = ["cake", "grocery", "chicken", "parcel", "ride", "repair", "team", "custom"];
+   115→   115→      return order.indexOf(a.key) - order.indexOf(b.key);
+   116→   116→    })
+   117→   117→    .map((s) => {
+   118→   118→      const labels = safeParse<Record<string, string>>(s.labels, {});
+   119→   119→      return {
+   120→   120→        id: `svc_${s.id}`,
+   121→   121→        title: `${s.icon} ${labels[lang] || labels.en || s.key}`,
+   122→   122→        description: s.kind === "order" ? "Order now" : s.kind === "book" ? "Book a slot" : s.kind === "team" ? "Talk to us" : "Tell us what you need",
+   123→   123→      };
+   124→   124→    });
+   125→   125→  return rows;
+   126→   126→}
+   127→   127→
+   128→   128→// ─────────────────────────────────────────────────────────────
+   129→   129→// Main handler
+   130→   130→// ─────────────────────────────────────────────────────────────
+   131→   131→
+   132→   132→export async function POST(req: NextRequest) {
+   133→   133→  const body = await req.json();
+   134→   134→  const { tenantSlug, phone, message, button, location, mediaType } = body as {
+   135→   135→    tenantSlug: string;
+   136→   136→    phone: string;
+   137→   137→    message?: string;
+   138→   138→    button?: string;
+   139→   139→    location?: { lat: number; lng: number };
+   140→   140→    mediaType?: "voice" | "image";
+   141→   141→  };
+   142→   142→
+   143→   143→  if (!tenantSlug || !phone) {
+   144→   144→    return NextResponse.json({ error: "tenantSlug and phone required" }, { status: 400 });
+   145→   145→  }
+   146→   146→
+   147→   147→  const tenant = await db.tenant.findUnique({
+   148→   148→    where: { slug: tenantSlug },
+   149→   149→    include: {
+   150→   150→      services: { where: { isActive: true } },
+   151→   151→      cities: { where: { isActive: true } },
+   152→   152→    },
+   153→   153→  });
+   154→   154→  if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+   155→   155→
+   156→   156→  // Find or create customer
+   157→   157→  let customer = await db.customer.findUnique({
+   158→   158→    where: { tenantId_phone: { tenantId: tenant.id, phone } },
+   159→   159→  });
+   160→   160→  if (!customer) {
+   161→   161→    customer = await db.customer.create({
+   162→   162→      data: { tenantId: tenant.id, phone, language: "en" },
+   163→   163→    });
+   164→   164→  }
+   165→   165→
+   166→   166→  // Find or create session
+   167→   167→  let session = await db.botSession.findUnique({
+   168→   168→    where: { tenantId_phone: { tenantId: tenant.id, phone } },
+   169→   169→  });
+   170→   170→  if (!session) {
+   171→   171→    session = await db.botSession.create({
+   172→   172→      data: { tenantId: tenant.id, customerId: customer.id, phone },
+   173→   173→    });
+   174→   174→  }
+   175→   175→
+   176→   176→  const lang = (customer.language as "en" | "hi") || "en";
+   177→   177→  const replies: BotReply[] = [];
+   178→   178→
+   179→   179→  // ── Handle charges agree/cancel buttons (sent by provider via /charges) ──
+   180→   180→  if (button && button.startsWith("charges_agree_")) {
+   181→   181→    const orderId = button.slice("charges_agree_".length);
+   182→   182→    try {
+   183→   183→      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
+   184→   184→        method: "PATCH",
+   185→   185→        headers: { "Content-Type": "application/json" },
+   186→   186→        body: JSON.stringify({ agreed: true, tenantSlug }),
+   187→   187→      });
+   188→   188→      replies.push({ kind: "text", text: "✅ Charges agreed. The provider will send a payment link shortly." });
+   189→   189→    } catch {
+   190→   190→      replies.push({ kind: "text", text: "Something went wrong. Please try again." });
+   191→   191→    }
+   192→   192→    return NextResponse.json({ replies, session: { state: session.state } });
+   193→   193→  }
+   194→   194→  if (button && button.startsWith("charges_cancel_")) {
+   195→   195→    const orderId = button.slice("charges_cancel_".length);
+   196→   196→    try {
+   197→   197→      await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/charges`, {
+   198→   198→        method: "PATCH",
+   199→   199→        headers: { "Content-Type": "application/json" },
+   200→   200→        body: JSON.stringify({ agreed: false, tenantSlug }),
+   201→   201→      });
+   202→   202→      replies.push({ kind: "text", text: "❌ Order cancelled. Type *menu* to start a new order." });
+   203→   203→    } catch {
+   204→   204→      replies.push({ kind: "text", text: "Something went wrong." });
+   205→   205→    }
+   206→   206→    return NextResponse.json({ replies, session: { state: session.state } });
+   207→   207→  }
+   208→   208→
+   209→   209→  // ── Handle rating buttons (rate_5_<orderId>, rate_4_, rate_3_) ──
+   210→   210→  if (button && button.startsWith("rate_")) {
+   211→   211→    const match = button.match(/^rate_(\d+)_(.+)$/);
+   212→   212→    if (match) {
+   213→   213→      const rating = parseInt(match[1], 10);
+   214→   214→      const orderId = match[2];
+   215→   215→      try {
+   216→   216→        const res = await fetch(`${req.nextUrl.origin}/api/orders/${orderId}/review`, {
+   217→   217→          method: "POST",
+   218→   218→          headers: { "Content-Type": "application/json" },
+   219→   219→          body: JSON.stringify({ rating, tenantSlug }),
+   220→   220→        });
+   221→   221→        const data = await res.json();
+   222→   222→        if (res.ok) {
+   223→   223→          replies.push({ kind: "text", text: `🙏 Thank you for your ${rating}★ rating!${data.googleReviewUrl ? "\n\nWe've also sent you a link to review us on Google — it really helps!" : ""}` });
+   224→   224→        } else if (data.error === "review_already_submitted") {
+   225→   225→          replies.push({ kind: "text", text: "You've already rated this order. Thank you! 🙏" });
+   226→   226→        } else {
+   227→   227→          replies.push({ kind: "text", text: "Thanks for your feedback! 🙏" });
+   228→   228→        }
+   229→   229→      } catch {
+   230→   230→        replies.push({ kind: "text", text: "Thanks for your feedback! 🙏" });
+   231→   231→      }
+   232→   232→      return NextResponse.json({ replies, session: { state: session.state } });
+   233→   233→    }
+   234→   234→  }
+   235→   235→
+   236→   236→  // ── Handle "cancel" / "menu" anywhere ────────────────────
+   237→   237→  const text = (message || "").trim().toLowerCase();
+   238→   238→  if (text === "cancel" || text === "❌ cancel" || text === "cancel order") {
+   239→   239→    // Reset draft
+   240→   240→    await db.botSession.update({
+   241→   241→      where: { id: session.id },
+   242→   242→      data: {
+   243→   243→        state: "menu",
+   244→   244→        draftService: null,
+   245→   245→        draftItems: "[]",
+   246→   246→        draftTiming: null,
+   247→   247→        draftShop: null,
+   248→   248→        draftAddress: null,
+   249→   249→        draftLat: null,
+   250→   250→        draftLng: null,
+   251→   251→      },
+   252→   252→    });
+   253→   253→    replies.push({ kind: "text", text: t(tenant, lang, "cancelled") });
+   254→   254→    // Show menu
+   255→   255→    const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   256→   256→    replies.push({
+   257→   257→      kind: "list",
+   258→   258→      text: t(tenant, lang, "menu_title"),
+   259→   259→      listTitle: t(tenant, lang, "menu_title"),
+   260→   260→      listButton: t(tenant, lang, "menu_button"),
+   261→   261→      sections: [{ title: "Services", rows: menuRows }],
+   262→   262→    });
+   263→   263→    return NextResponse.json({ replies, session: { state: "menu" } });
+   264→   264→  }
+   265→   265→
+   266→   266→  if (text === "menu" || text === "start" || text === "hi" || text === "hello") {
+   267→   267→    await db.botSession.update({
+   268→   268→      where: { id: session.id },
+   269→   269→      data: { state: "menu", draftService: null, draftItems: "[]" },
+   270→   270→    });
+   271→   271→    const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   272→   272→    replies.push({
+   273→   273→      kind: "list",
+   274→   274→      text: t(tenant, lang, "menu_title"),
+   275→   275→      listTitle: t(tenant, lang, "menu_title"),
+   276→   276→      listButton: t(tenant, lang, "menu_button"),
+   277→   277→      sections: [{ title: "Services", rows: menuRows }],
+   278→   278→    });
+   279→   279→    return NextResponse.json({ replies, session: { state: "menu" } });
+   280→   280→  }
+   281→   281→
+   282→   282→  // ── State machine ────────────────────────────────────────
+   283→   283→  switch (session.state) {
+   284→   284→    case "language": {
+   285→   285→      if (button === "lang_en") {
+   286→   286→        await db.customer.update({ where: { id: customer.id }, data: { language: "en" } });
+   287→   287→        const menuRows = buildMenuList(tenant.id, tenant.services, "en");
+   288→   288→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   289→   289→        replies.push({
+   290→   290→          kind: "list",
+   291→   291→          text: t(tenant, "en", "menu_title"),
+   292→   292→          listTitle: t(tenant, "en", "menu_title"),
+   293→   293→          listButton: t(tenant, "en", "menu_button"),
+   294→   294→          sections: [{ title: "Services", rows: menuRows }],
+   295→   295→        });
+   296→   296→      } else if (button === "lang_hi") {
+   297→   297→        await db.customer.update({ where: { id: customer.id }, data: { language: "hi" } });
+   298→   298→        const menuRows = buildMenuList(tenant.id, tenant.services, "hi");
+   299→   299→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   300→   300→        replies.push({
+   301→   301→          kind: "list",
+   302→   302→          text: t(tenant, "hi", "menu_title"),
+   303→   303→          listTitle: t(tenant, "hi", "menu_title"),
+   304→   304→          listButton: t(tenant, "hi", "menu_button"),
+   305→   305→          sections: [{ title: "Services", rows: menuRows }],
+   306→   306→        });
+   307→   307→      } else {
+   308→   308→        replies.push({
+   309→   309→          kind: "buttons",
+   310→   310→          text: t(tenant, lang, "welcome"),
+   311→   311→          buttons: [
+   312→   312→            { id: "lang_en", label: "🇬🇧 English" },
+   313→   313→            { id: "lang_hi", label: "🇮🇳 हिन्दी" },
+   314→   314→          ],
+   315→   315→        });
+   316→   316→      }
+   317→   317→      break;
+   318→   318→    }
+   319→   319→
+   320→   320→    case "menu": {
+   321→   321→      // Handle list item tap: svc_<id>
+   322→   322→      if (button && button.startsWith("svc_")) {
+   323→   323→        const svcId = button.slice(4);
+   324→   324→        const svc = tenant.services.find((s) => s.id === svcId);
+   325→   325→        if (!svc) {
+   326→   326→          replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   327→   327→          break;
+   328→   328→        }
+   329→   329→        await db.botSession.update({
+   330→   330→          where: { id: session.id },
+   331→   331→          data: { state: "service_draft", draftService: svc.id, draftItems: "[]", draftShop: null, draftTiming: null },
+   332→   332→        });
+   333→   333→        // Service-specific first message
+   334→   334→        if (svc.key === "grocery") {
+   335→   335→          replies.push({ kind: "buttons", text: t(tenant, lang, "ask_grocery"), buttons: [
+   336→   336→            { id: "grocery_done", label: "✅ Done" },
+   337→   337→            { id: "grocery_more", label: "➕ Add more" },
+   338→   338→            { id: "cancel", label: "❌ Start over" },
+   339→   339→          ]});
+   340→   340→        } else if (svc.kind === "order") {
+   341→   341→          replies.push({ kind: "text", text: t(tenant, lang, `ask_${svc.key}`) });
+   342→   342→        } else if (svc.kind === "book") {
+   343→   343→          replies.push({ kind: "text", text: t(tenant, lang, `ask_${svc.key}`) });
+   344→   344→        } else if (svc.kind === "team") {
+   345→   345→          replies.push({ kind: "text", text: t(tenant, lang, "ask_team") });
+   346→   346→          // Mark as custom
+   347→   347→          await db.botSession.update({
+   348→   348→            where: { id: session.id },
+   349→   349→            data: { state: "service_draft", draftService: svc.id },
+   350→   350→          });
+   351→   351→        } else if (svc.kind === "custom") {
+   352→   352→          replies.push({ kind: "text", text: t(tenant, lang, "ask_custom") });
+   353→   353→        }
+   354→   354→      } else {
+   355→   355→        // Re-show menu
+   356→   356→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   357→   357→        replies.push({
+   358→   358→          kind: "list",
+   359→   359→          text: t(tenant, lang, "old_button") + "\n" + t(tenant, lang, "menu_title"),
+   360→   360→          listTitle: t(tenant, lang, "menu_title"),
+   361→   361→          listButton: t(tenant, lang, "menu_button"),
+   362→   362→          sections: [{ title: "Services", rows: menuRows }],
+   363→   363→        });
+   364→   364→      }
+   365→   365→      break;
+   366→   366→    }
+   367→   367→
+   368→   368→    case "service_draft": {
+   369→   369→      const svcId = session.draftService;
+   370→   370→      if (!svcId) {
+   371→   371→        // Reset
+   372→   372→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   373→   373→        replies.push({ kind: "text", text: t(tenant, lang, "back_to_menu") });
+   374→   374→        break;
+   375→   375→      }
+   376→   376→      const svc = tenant.services.find((s) => s.id === svcId);
+   377→   377→      if (!svc) {
+   378→   378→        await db.botSession.update({ where: { id: session.id }, data: { state: "menu", draftService: null } });
+   379→   379→        replies.push({ kind: "text", text: t(tenant, lang, "back_to_menu") });
+   380→   380→        break;
+   381→   381→      }
+   382→   382→
+   383→   383→      // ── Grocery: accumulate items until Done ──────────
+   384→   384→      if (svc.key === "grocery") {
+   385→   385→        if (button === "grocery_done") {
+   386→   386→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   387→   387→          if (items.length === 0) {
+   388→   388→            replies.push({ kind: "text", text: "Your list is empty. Add items first." });
+   389→   389→            break;
+   390→   390→          }
+   391→   391→          replies.push({ kind: "text", text: t(tenant, lang, "grocery_done") });
+   392→   392→          // Move to shop question
+   393→   393→          await db.botSession.update({
+   394→   394→            where: { id: session.id },
+   395→   395→            data: { state: "shop" },
+   396→   396→          });
+   397→   397→          replies.push({
+   398→   398→            kind: "buttons",
+   399→   399→            text: t(tenant, lang, "ask_shop"),
+   400→   400→            buttons: [
+   401→   401→              { id: "shop_any", label: "🏪 Any shop" },
+   402→   402→              { id: "shop_specify", label: "✏️ Specify" },
+   403→   403→            ],
+   404→   404→          });
+   405→   405→          break;
+   406→   406→        }
+   407→   407→        if (button === "grocery_more" || message || mediaType) {
+   408→   408→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   409→   409→          // ── Voice note: transcribe via AI, then extract items ──
+   410→   410→          if (mediaType === "voice") {
+   411→   411→            replies.push({ kind: "text", text: t(tenant, lang, "voice_received") });
+   412→   412→            // Try AI transcription + extraction
+   413→   413→            const { runAiTask, runPlatformAiFallback } = await import("@/lib/ai");
+   414→   414→            let transcribedText = "";
+   415→   415→            const voiceResult = await runAiTask<string>(tenant.id, "transcribe_voice", { audioUrl: body.audioUrl });
+   416→   416→            if (voiceResult.ok && voiceResult.data) {
+   417→   417→              transcribedText = voiceResult.data;
+   418→   418→            } else {
+   419→   419→              // Try platform fallback
+   420→   420→              const fallback = await runPlatformAiFallback<string>("transcribe_voice", { text: message || "" });
+   421→   421→              if (fallback.ok && fallback.data) transcribedText = fallback.data;
+   422→   422→            }
+   423→   423→            if (!transcribedText) {
+   424→   424→              // Graceful degrade → save as custom order
+   425→   425→              replies.push({ kind: "text", text: t(tenant, lang, "voice_failed") });
+   426→   426→              // Save raw voice as custom order
+   427→   427→              const lastOrder = await db.order.findFirst({ where: { tenantId: tenant.id }, orderBy: { code: "desc" } });
+   428→   428→              const code = lastOrder ? String(parseInt(lastOrder.code, 10) + 1) : "1001";
+   429→   429→              await db.order.create({
+   430→   430→                data: {
+   431→   431→                  tenantId: tenant.id,
+   432→   432→                  cityId: tenant.cities[0]?.id || "",
+   433→   433→                  customerId: customer.id,
+   434→   434→                  code,
+   435→   435→                  status: "new",
+   436→   436→                  kind: "custom",
+   437→   437→                  description: `[voice note — transcription failed]`,
+   438→   438→                  timing: "ASAP",
+   439→   439→                  source: "bot",
+   440→   440→                  activity: { create: [{ tenantId: tenant.id, actor: "bot", action: "created", detail: "Voice note — AI transcription failed, saved for human" }] },
+   441→   441→                },
+   442→   442→              });
+   443→   443→              break;
+   444→   444→            }
+   445→   445→            // Extract items from the transcription
+   446→   446→            const extractResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "extract_grocery", { text: transcribedText });
+   447→   447→            const newItems = extractResult.ok && extractResult.data && Array.isArray(extractResult.data) ? extractResult.data : [];
+   448→   448→            if (newItems.length === 0) {
+   449→   449→              replies.push({ kind: "text", text: `Transcribed: "${transcribedText}". Couldn't extract items — please type your list.` });
+   450→   450→              break;
+   451→   451→            }
+   452→   452→            const merged = [...items, ...newItems];
+   453→   453→            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged), voiceTranscript: transcribedText } });
+   454→   454→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   455→   455→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   456→   456→              { id: "grocery_done", label: "✅ Done" },
+   457→   457→              { id: "grocery_more", label: "➕ Add more" },
+   458→   458→              { id: "cancel", label: "❌ Start over" },
+   459→   459→            ]});
+   460→   460→            break;
+   461→   461→          }
+   462→   462→          // ── Photo: OCR via AI, then extract items ──
+   463→   463→          if (mediaType === "image") {
+   464→   464→            replies.push({ kind: "text", text: t(tenant, lang, "photo_received") });
+   465→   465→            const { runAiTask, runPlatformAiFallback } = await import("@/lib/ai");
+   466→   466→            const photoResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "read_photo", { imageUrl: body.mediaUrl || "" });
+   467→   467→            const newItems = photoResult.ok && photoResult.data && Array.isArray(photoResult.data) ? photoResult.data : [];
+   468→   468→            if (newItems.length === 0) {
+   469→   469→              // Try platform fallback
+   470→   470→              const fallback = await runPlatformAiFallback<Array<{ name: string; qty?: string | number }>>("read_photo", { text: message || "" });
+   471→   471→              if (fallback.ok && Array.isArray(fallback.data)) {
+   472→   472→                newItems.push(...fallback.data);
+   473→   473→              }
+   474→   474→            }
+   475→   475→            if (newItems.length === 0) {
+   476→   476→              replies.push({ kind: "text", text: t(tenant, lang, "photo_failed") });
+   477→   477→              break;
+   478→   478→            }
+   479→   479→            const merged = [...items, ...newItems];
+   480→   480→            await db.botSession.update({ where: { id: session.id }, data: { draftItems: JSON.stringify(merged) } });
+   481→   481→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   482→   482→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   483→   483→              { id: "grocery_done", label: "✅ Done" },
+   484→   484→              { id: "grocery_more", label: "➕ Add more" },
+   485→   485→              { id: "cancel", label: "❌ Start over" },
+   486→   486→            ]});
+   487→   487→            break;
+   488→   488→          }
+   489→   489→          // ── Typed items: try AI extraction first, fall back to regex ──
+   490→   490→          if (message) {
+   491→   491→            // Try AI extraction for lenient parsing
+   492→   492→            const { runAiTask } = await import("@/lib/ai");
+   493→   493→            const aiResult = await runAiTask<Array<{ name: string; qty?: string | number }>>(tenant.id, "extract_grocery", { text: message });
+   494→   494→            let newItems: Array<{ name: string; qty?: string | number }> = [];
+   495→   495→            if (aiResult.ok && aiResult.data && Array.isArray(aiResult.data) && aiResult.data.length > 0) {
+   496→   496→              newItems = aiResult.data;
+   497→   497→            } else {
+   498→   498→              // Fallback: simple regex parsing
+   499→   499→              const lines = message.split(/\n|,|;/).map((l) => l.trim()).filter(Boolean);
+   500→   500→              newItems = lines.map((l) => {
+   501→   501→                const m = l.match(/^(\d+\.?\d*)\s*(?:x|×|kg|g|l|ltr|pcs|piece|pkt|pack)?\s*(.*)/i);
+   502→   502→                if (m && m[2]) return { name: m[2], qty: m[1] };
+   503→   503→                return { name: l, qty: 1 };
+   504→   504→              });
+   505→   505→            }
+   506→   506→            const merged = [...items, ...newItems];
+   507→   507→            await db.botSession.update({
+   508→   508→              where: { id: session.id },
+   509→   509→              data: { draftItems: JSON.stringify(merged) },
+   510→   510→            });
+   511→   511→            const summary = merged.map((it, i) => `${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`).join("\n");
+   512→   512→            replies.push({ kind: "buttons", text: `${t(tenant, lang, "ask_grocery_summary")}\n\n${summary}`, buttons: [
+   513→   513→              { id: "grocery_done", label: "✅ Done" },
+   514→   514→              { id: "grocery_more", label: "➕ Add more" },
+   515→   515→              { id: "cancel", label: "❌ Start over" },
+   516→   516→            ]});
+   517→   517→          }
+   518→   518→          break;
+   519→   519→        }
+   520→   520→      }
+   521→   521→
+   522→   522→      // ── Other services: capture description/timing ─────
+   523→   523→      if (button === "grocery_done") {
+   524→   524→        // edge case
+   525→   525→        await db.botSession.update({ where: { id: session.id }, data: { state: "shop" } });
+   526→   526→        replies.push({
+   527→   527→          kind: "buttons",
+   528→   528→          text: t(tenant, lang, "ask_shop"),
+   529→   529→          buttons: [
+   530→   530→            { id: "shop_any", label: "🏪 Any shop" },
+   531→   531→            { id: "shop_specify", label: "✏️ Specify" },
+   532→   532→          ],
+   533→   533→        });
+   534→   534→        break;
+   535→   535→      }
+   536→   536→
+   537→   537→      // For order/book services, capture the message as items/description
+   538→   538→      if (message) {
+   539→   539→        await db.botSession.update({
+   540→   540→          where: { id: session.id },
+   541→   541→          data: {
+   542→   542→            draftItems: JSON.stringify([{ name: message, qty: 1 }]),
+   543→   543→            state: "shop",
+   544→   544→          },
+   545→   545→        });
+   546→   546→        if (svc.kind === "order") {
+   547→   547→          replies.push({
+   548→   548→            kind: "buttons",
+   549→   549→            text: t(tenant, lang, "ask_shop"),
+   550→   550→            buttons: [
+   551→   551→              { id: "shop_any", label: "🏪 Any shop" },
+   552→   552→              { id: "shop_specify", label: "✏️ Specify" },
+   553→   553→            ],
+   554→   554→          });
+   555→   555→        } else {
+   556→   556→          // Book → ask timing directly
+   557→   557→          await db.botSession.update({ where: { id: session.id }, data: { state: "timing" } });
+   558→   558→          replies.push({
+   559→   559→            kind: "buttons",
+   560→   560→            text: t(tenant, lang, "ask_timing_book"),
+   561→   561→            buttons: [
+   562→   562→              { id: "slot_today_2_4", label: "Today 2–4pm" },
+   563→   563→              { id: "slot_today_4_6", label: "Today 4–6pm" },
+   564→   564→              { id: "slot_tmr_morn", label: "Tomorrow morning" },
+   565→   565→              { id: "slot_custom", label: "✏️ Type own" },
+   566→   566→            ],
+   567→   567→          });
+   568→   568→        }
+   569→   569→      } else if (svc.kind === "team" || svc.kind === "custom") {
+   570→   570→        // Wait for message
+   571→   571→        if (!message) {
+   572→   572→          replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   573→   573→        }
+   574→   574→      } else {
+   575→   575→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   576→   576→      }
+   577→   577→      break;
+   578→   578→    }
+   579→   579→
+   580→   580→    case "shop": {
+   581→   581→      if (button === "shop_any") {
+   582→   582→        await db.botSession.update({
+   583→   583→          where: { id: session.id },
+   584→   584→          data: { draftShop: null, state: "timing" },
+   585→   585→        });
+   586→   586→        replies.push({
+   587→   587→          kind: "buttons",
+   588→   588→          text: t(tenant, lang, "ask_timing"),
+   589→   589→          buttons: [
+   590→   590→            { id: "slot_asap", label: "⚡ ASAP" },
+   591→   591→            { id: "slot_today_eve", label: "🌆 Today evening" },
+   592→   592→            { id: "slot_tmr", label: "📅 Tomorrow" },
+   593→   593→            { id: "slot_custom", label: "✏️ Type own" },
+   594→   594→          ],
+   595→   595→        });
+   596→   596→      } else if (button === "shop_specify") {
+   597→   597→        replies.push({ kind: "text", text: "Type the shop name:" });
+   598→   598→        // Stay in shop state, wait for text
+   599→   599→        await db.botSession.update({ where: { id: session.id }, data: { state: "shop_text" } });
+   600→   600→      } else {
+   601→   601→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   602→   602→      }
+   603→   603→      break;
+   604→   604→    }
+   605→   605→
+   606→   606→    case "shop_text": {
+   607→   607→      if (message) {
+   608→   608→        await db.botSession.update({
+   609→   609→          where: { id: session.id },
+   610→   610→          data: { draftShop: message, state: "timing" },
+   611→   611→        });
+   612→   612→        replies.push({
+   613→   613→          kind: "buttons",
+   614→   614→          text: t(tenant, lang, "ask_timing"),
+   615→   615→          buttons: [
+   616→   616→            { id: "slot_asap", label: "⚡ ASAP" },
+   617→   617→            { id: "slot_today_eve", label: "🌆 Today evening" },
+   618→   618→            { id: "slot_tmr", label: "📅 Tomorrow" },
+   619→   619→            { id: "slot_custom", label: "✏️ Type own" },
+   620→   620→          ],
+   621→   621→        });
+   622→   622→      }
+   623→   623→      break;
+   624→   624→    }
+   625→   625→
+   626→   626→    case "timing": {
+   627→   627→      const slotMap: Record<string, string> = {
+   628→   628→        slot_asap: "ASAP",
+   629→   629→        slot_today_eve: "Today evening",
+   630→   630→        slot_tmr: "Tomorrow morning",
+   631→   631→        slot_today_2_4: "Today 2–4pm",
+   632→   632→        slot_today_4_6: "Today 4–6pm",
+   633→   633→        slot_tmr_morn: "Tomorrow morning",
+   634→   634→      };
+   635→   635→      if (button && slotMap[button]) {
+   636→   636→        await db.botSession.update({
+   637→   637→          where: { id: session.id },
+   638→   638→          data: { draftTiming: slotMap[button], state: "address" },
+   639→   639→        });
+   640→   640→        // Offer saved addresses
+   641→   641→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   642→   642→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   643→   643→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   644→   644→        replies.push({
+   645→   645→          kind: "buttons",
+   646→   646→          text: t(tenant, lang, "ask_address"),
+   647→   647→          buttons,
+   648→   648→        });
+   649→   649→      } else if (button === "slot_custom") {
+   650→   650→        replies.push({ kind: "text", text: "Type your preferred time:" });
+   651→   651→        await db.botSession.update({ where: { id: session.id }, data: { state: "timing_text" } });
+   652→   652→      } else if (message) {
+   653→   653→        // Free text timing
+   654→   654→        await db.botSession.update({
+   655→   655→          where: { id: session.id },
+   656→   656→          data: { draftTiming: message, state: "address" },
+   657→   657→        });
+   658→   658→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   659→   659→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   660→   660→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   661→   661→        replies.push({
+   662→   662→          kind: "buttons",
+   663→   663→          text: t(tenant, lang, "ask_address"),
+   664→   664→          buttons,
+   665→   665→        });
+   666→   666→      } else {
+   667→   667→        replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   668→   668→      }
+   669→   669→      break;
+   670→   670→    }
+   671→   671→
+   672→   672→    case "timing_text": {
+   673→   673→      if (message) {
+   674→   674→        await db.botSession.update({
+   675→   675→          where: { id: session.id },
+   676→   676→          data: { draftTiming: message, state: "address" },
+   677→   677→        });
+   678→   678→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   679→   679→        const buttons = addresses.map((a, i) => ({ id: `addr_${i}`, label: `🏠 ${a.label}` }));
+   680→   680→        buttons.push({ id: "addr_new", label: "✏️ New address" });
+   681→   681→        replies.push({
+   682→   682→          kind: "buttons",
+   683→   683→          text: t(tenant, lang, "ask_address"),
+   684→   684→          buttons,
+   685→   685→        });
+   686→   686→      }
+   687→   687→      break;
+   688→   688→    }
+   689→   689→
+   690→   690→    case "address": {
+   691→   691→      const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   692→   692→      // Saved address tap
+   693→   693→      if (button && button.startsWith("addr_") && button !== "addr_new") {
+   694→   694→        const idx = parseInt(button.slice(5), 10);
+   695→   695→        const addr = addresses[idx];
+   696→   696→        if (addr) {
+   697→   697→          await db.botSession.update({
+   698→   698→            where: { id: session.id },
+   699→   699→            data: {
+   700→   700→              draftAddress: addr.text,
+   701→   701→              draftLat: addr.lat || null,
+   702→   702→              draftLng: addr.lng || null,
+   703→   703→              state: "confirm",
+   704→   704→            },
+   705→   705→          });
+   706→   706→          // Show confirmation summary
+   707→   707→          const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   708→   708→          const svc = tenant.services.find((s) => s.id === session.draftService);
+   709→   709→          const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, addr.text, addr.area, lang);
+   710→   710→          replies.push({
+   711→   711→            kind: "buttons",
+   712→   712→            text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   713→   713→            buttons: [
+   714→   714→              { id: "confirm_yes", label: "✅ Confirm" },
+   715→   715→              { id: "confirm_change", label: "✏️ Change" },
+   716→   716→              { id: "cancel", label: "❌ Cancel" },
+   717→   717→            ],
+   718→   718→          });
+   719→   719→          break;
+   720→   720→        }
+   721→   721→      }
+   722→   722→      if (button === "addr_new") {
+   723→   723→        replies.push({ kind: "text", text: t(tenant, lang, "ask_address") });
+   724→   724→        await db.botSession.update({ where: { id: session.id }, data: { state: "address_new" } });
+   725→   725→        break;
+   726→   726→      }
+   727→   727→      // Location pin received
+   728→   728→      if (location && location.lat && location.lng) {
+   729→   729→        const area = reverseGeocodeStub(location.lat, location.lng);
+   730→   730→        await db.botSession.update({
+   731→   731→          where: { id: session.id },
+   732→   732→          data: {
+   733→   733→            draftAddress: `${area} (pin shared)`,
+   734→   734→            draftLat: location.lat,
+   735→   735→            draftLng: location.lng,
+   736→   736→            state: "address_confirm",
+   737→   737→          },
+   738→   738→        });
+   739→   739→        replies.push({
+   740→   740→          kind: "buttons",
+   741→   741→          text: t(tenant, lang, "ask_address_confirm", { area }) || `Is *${area}* correct?`,
+   742→   742→          buttons: [
+   743→   743→            { id: "addr_correct", label: "✅ Correct" },
+   744→   744→            { id: "addr_type", label: "✏️ Type instead" },
+   745→   745→          ],
+   746→   746→        });
+   747→   747→        break;
+   748→   748→      }
+   749→   749→      // Typed address
+   750→   750→      if (message) {
+   751→   751→        await db.botSession.update({
+   752→   752→          where: { id: session.id },
+   753→   753→          data: { draftAddress: message, state: "confirm" },
+   754→   754→        });
+   755→   755→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   756→   756→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   757→   757→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, message, null, lang);
+   758→   758→        replies.push({
+   759→   759→          kind: "buttons",
+   760→   760→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   761→   761→          buttons: [
+   762→   762→            { id: "confirm_yes", label: "✅ Confirm" },
+   763→   763→            { id: "confirm_change", label: "✏️ Change" },
+   764→   764→            { id: "cancel", label: "❌ Cancel" },
+   765→   765→          ],
+   766→   766→        });
+   767→   767→        break;
+   768→   768→      }
+   769→   769→      replies.push({ kind: "text", text: t(tenant, lang, "invalid") });
+   770→   770→      break;
+   771→   771→    }
+   772→   772→
+   773→   773→    case "address_new": {
+   774→   774→      if (location && location.lat && location.lng) {
+   775→   775→        const area = reverseGeocodeStub(location.lat, location.lng);
+   776→   776→        await db.botSession.update({
+   777→   777→          where: { id: session.id },
+   778→   778→          data: {
+   779→   779→            draftAddress: `${area} (pin shared)`,
+   780→   780→            draftLat: location.lat,
+   781→   781→            draftLng: location.lng,
+   782→   782→            state: "address_confirm",
+   783→   783→          },
+   784→   784→        });
+   785→   785→        replies.push({
+   786→   786→          kind: "buttons",
+   787→   787→          text: `Is *${area}* correct?`,
+   788→   788→          buttons: [
+   789→   789→            { id: "addr_correct", label: "✅ Correct" },
+   790→   790→            { id: "addr_type", label: "✏️ Type instead" },
+   791→   791→          ],
+   792→   792→        });
+   793→   793→        break;
+   794→   794→      }
+   795→   795→      if (message) {
+   796→   796→        await db.botSession.update({
+   797→   797→          where: { id: session.id },
+   798→   798→          data: { draftAddress: message, state: "confirm" },
+   799→   799→        });
+   800→   800→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   801→   801→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   802→   802→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, message, null, lang);
+   803→   803→        replies.push({
+   804→   804→          kind: "buttons",
+   805→   805→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   806→   806→          buttons: [
+   807→   807→            { id: "confirm_yes", label: "✅ Confirm" },
+   808→   808→            { id: "confirm_change", label: "✏️ Change" },
+   809→   809→            { id: "cancel", label: "❌ Cancel" },
+   810→   810→          ],
+   811→   811→        });
+   812→   812→        break;
+   813→   813→      }
+   814→   814→      replies.push({ kind: "text", text: t(tenant, lang, "ask_address") });
+   815→   815→      break;
+   816→   816→    }
+   817→   817→
+   818→   818→    case "address_confirm": {
+   819→   819→      if (button === "addr_correct") {
+   820→   820→        // Save address to customer
+   821→   821→        const addresses = safeParse<Array<{ label: string; text: string; area?: string; lat?: number; lng?: number }>>(customer.addresses, []);
+   822→   822→        const area = session.draftAddress ? session.draftAddress.split(" (")[0] : "Saved";
+   823→   823→        const newAddr = {
+   824→   824→          label: area,
+   825→   825→          text: session.draftAddress || "",
+   826→   826→          lat: session.draftLat,
+   827→   827→          lng: session.draftLng,
+   828→   828→          area,
+   829→   829→        };
+   830→   830→        const updated = [...addresses.filter((a) => a.area !== area), newAddr];
+   831→   831→        await db.customer.update({
+   832→   832→          where: { id: customer.id },
+   833→   833→          data: { addresses: JSON.stringify(updated) },
+   834→   834→        });
+   835→   835→        await db.botSession.update({ where: { id: session.id }, data: { state: "confirm" } });
+   836→   836→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   837→   837→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   838→   838→        const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, session.draftAddress || "", area, lang);
+   839→   839→        replies.push({
+   840→   840→          kind: "buttons",
+   841→   841→          text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
+   842→   842→          buttons: [
+   843→   843→            { id: "confirm_yes", label: "✅ Confirm" },
+   844→   844→            { id: "confirm_change", label: "✏️ Change" },
+   845→   845→            { id: "cancel", label: "❌ Cancel" },
+   846→   846→          ],
+   847→   847→        });
+   848→   848→        break;
+   849→   849→      }
+   850→   850→      if (button === "addr_type") {
+   851→   851→        replies.push({ kind: "text", text: "Type your address with landmark:" });
+   852→   852→        await db.botSession.update({ where: { id: session.id }, data: { state: "address_new" } });
+   853→   853→        break;
+   854→   854→      }
+   855→   855→      break;
+   856→   856→    }
+   857→   857→
+   858→   858→    case "confirm": {
+   859→   859→      if (button === "confirm_yes") {
+   860→   860→        // ── PLACE ORDER ──────────────────────────────────
+   861→   861→        const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
+   862→   862→        const svc = tenant.services.find((s) => s.id === session.draftService);
+   863→   863→        const lastOrder = await db.order.findFirst({
+   864→   864→          where: { tenantId: tenant.id },
+   865→   865→          orderBy: { code: "desc" },
+   866→   866→        });
+   867→   867→        const code = lastOrder ? String(parseInt(lastOrder.code, 10) + 1) : "1001";
+   868→   868→        const cityId = tenant.cities[0]?.id;
+   869→   869→        if (!cityId) {
+   870→   870→          replies.push({ kind: "text", text: "Sorry, no active city. Please contact support." });
+   871→   871→          break;
+   872→   872→        }
+   873→   873→        const order = await db.order.create({
+   874→   874→          data: {
+   875→   875→            tenantId: tenant.id,
+   876→   876→            cityId,
+   877→   877→            customerId: customer.id,
+   878→   878→            serviceId: svc?.id || null,
+   879→   879→            code,
+   880→   880→            status: "new",
+   881→   881→            kind: svc?.kind || "order",
+   882→   882→            items: JSON.stringify(items),
+   883→   883→            description: items[0]?.name || null,
+   884→   884→            preferredShop: session.draftShop,
+   885→   885→            timing: session.draftTiming,
+   886→   886→            addressText: session.draftAddress,
+   887→   887→            addressArea: session.draftAddress ? session.draftAddress.split(" (")[0] : null,
+   888→   888→            addressLat: session.draftLat,
+   889→   889→            addressLng: session.draftLng,
+   890→   890→            source: "bot",
+   891→   891→            activity: {
+   892→   892→              create: [
+   893→   893→                { tenantId: tenant.id, actor: "bot", action: "created", detail: "Order created via WhatsApp" },
+   894→   894→              ],
+   895→   895→            },
+   896→   896→          },
+   897→   897→        });
+   898→   898→        // Broadcast to matching providers
+   899→   899→        const matchingProviders = await db.provider.findMany({
+   900→   900→          where: {
+   901→   901→            tenantId: tenant.id,
+   902→   902→            cityId,
+   903→   903→            isOnline: true,
+   904→   904→            isActive: true,
+   905→   905→          },
+   906→   906→        });
+   907→   907→        const toBroadcast = svc
+   908→   908→          ? matchingProviders.filter((p) => {
+   909→   909→              const sids = safeParse<string[]>(p.serviceIds, []);
+   910→   910→              return sids.length === 0 || sids.includes(svc.id);
+   911→   911→            })
+   912→   912→          : matchingProviders;
+   913→   913→
+   914→   914→        if (toBroadcast.length > 0) {
+   915→   915→          await db.order.update({ where: { id: order.id }, data: { status: "broadcast" } });
+   916→   916→          await db.orderBroadcast.createMany({
+   917→   917→            data: toBroadcast.map((p) => ({ orderId: order.id, providerId: p.id, status: "pending" })),
+   918→   918→          });
+   919→   919→          await db.activity.create({
+   920→   920→            data: {
+   921→   921→              tenantId: tenant.id, orderId: order.id,
+   922→   922→              actor: "system", action: "broadcast",
+   923→   923→              detail: `Broadcast to ${toBroadcast.length} provider(s)`,
+   924→   924→            },
+   925→   925→          });
+   926→   926→        }
+   927→   927→
+   928→   928→        await db.botSession.update({
+   929→   929→          where: { id: session.id },
+   930→   930→          data: {
+   931→   931→            state: "done",
+   932→   932→            draftService: null,
+   933→   933→            draftItems: "[]",
+   934→   934→            draftShop: null,
+   935→   935→            draftTiming: null,
+   936→   936→            draftAddress: null,
+   937→   937→            draftLat: null,
+   938→   938→            draftLng: null,
+   939→   939→          },
+   940→   940→        });
+   941→   941→        replies.push({ kind: "text", text: t(tenant, lang, "placed", { code }) });
+   942→   942→        // Show menu again
+   943→   943→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   944→   944→        replies.push({
+   945→   945→          kind: "list",
+   946→   946→          text: t(tenant, lang, "menu_title"),
+   947→   947→          listTitle: t(tenant, lang, "menu_title"),
+   948→   948→          listButton: t(tenant, lang, "menu_button"),
+   949→   949→          sections: [{ title: "Services", rows: menuRows }],
+   950→   950→        });
+   951→   951→        return NextResponse.json({ replies, session: { state: "done" }, order });
+   952→   952→      }
+   953→   953→      if (button === "confirm_change") {
+   954→   954→        // Restart from service
+   955→   955→        await db.botSession.update({
+   956→   956→          where: { id: session.id },
+   957→   957→          data: { state: "service_draft", draftItems: "[]" },
+   958→   958→        });
+   959→   959→        replies.push({ kind: "text", text: "Let's start over. Tell us what you need:" });
+   960→   960→        break;
+   961→   961→      }
+   962→   962→      if (button === "cancel") {
+   963→   963→        await db.botSession.update({
+   964→   964→          where: { id: session.id },
+   965→   965→          data: { state: "menu", draftService: null, draftItems: "[]" },
+   966→   966→        });
+   967→   967→        replies.push({ kind: "text", text: t(tenant, lang, "cancelled") });
+   968→   968→        const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   969→   969→        replies.push({
+   970→   970→          kind: "list",
+   971→   971→          text: t(tenant, lang, "menu_title"),
+   972→   972→          listTitle: t(tenant, lang, "menu_title"),
+   973→   973→          listButton: t(tenant, lang, "menu_button"),
+   974→   974→          sections: [{ title: "Services", rows: menuRows }],
+   975→   975→        });
+   976→   976→      }
+   977→   977→      break;
+   978→   978→    }
+   979→   979→
+   980→   980→    case "done":
+   981→   981→    default: {
+   982→   982→      // Show menu
+   983→   983→      const menuRows = buildMenuList(tenant.id, tenant.services, lang);
+   984→   984→      await db.botSession.update({ where: { id: session.id }, data: { state: "menu" } });
+   985→   985→      replies.push({
+   986→   986→        kind: "list",
+   987→   987→        text: t(tenant, lang, "menu_title"),
+   988→   988→        listTitle: t(tenant, lang, "menu_title"),
+   989→   989→        listButton: t(tenant, lang, "menu_button"),
+   990→   990→        sections: [{ title: "Services", rows: menuRows }],
+   991→   991→      });
+   992→   992→      break;
+   993→   993→    }
+   994→   994→  }
+   995→   995→
+   996→   996→  // Update session lastMessageAt
+   997→   997→  await db.botSession.update({
+   998→   998→    where: { id: session.id },
+   999→   999→    data: { lastMessageAt: new Date() },
+  1000→  1000→  });
+  1001→  1001→
+  1002→  1002→  return NextResponse.json({ replies, session: { state: session.state } });
+  1003→  1003→}
+  1004→  1004→
+  1005→  1005→function buildOrderSummary(
+  1006→  1006→  svc: { icon: string; key: string; labels: string } | undefined,
+  1007→  1007→  items: Array<{ name: string; qty?: string | number }>,
+  1008→  1008→  shop: string | null,
+  1009→  1009→  timing: string | null,
+  1010→  1010→  address: string,
+  1011→  1011→  area: string | null,
+  1012→  1012→  lang: "en" | "hi"
+  1013→  1013→): string {
+  1014→  1014→  const labels = svc ? safeParse<Record<string, string>>(svc.labels, {}) : {};
+  1015→  1015→  const svcName = svc ? `${svc.icon} ${labels[lang] || labels.en || svc.key}` : "Order";
+  1016→  1016→  const lines = [
+  1017→  1017→    `*${svcName}*`,
+  1018→  1018→    "",
+  1019→  1019→    "🛍️ Items:",
+  1020→  1020→    ...items.map((it, i) => `  ${i + 1}. ${it.name}${it.qty ? ` ×${it.qty}` : ""}`),
+  1021→  1021→  ];
+  1022→  1022→  if (shop) lines.push("", `🏪 Shop: ${shop}`);
+  1023→  1023→  if (timing) lines.push(`⏰ Timing: ${timing}`);
+  1024→  1024→  lines.push("", `📍 Address:`, `  ${address}`);
+  1025→  1025→  if (area) lines.push(`  Area: ${area}`);
+  1026→  1026→  return lines.join("\n");
+  1027→  1027→}
+  1028→  1028→

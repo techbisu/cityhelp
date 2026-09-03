@@ -46,10 +46,41 @@ export async function POST(
     }
   }
 
-  // Verify provider
+  // Verify provider belongs to same tenant
   const provider = await db.provider.findUnique({ where: { id: providerId }, select: { tenantId: true, name: true, upiIds: true } });
   if (!provider || provider.tenantId !== order.tenantId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // CRITICAL: verify the provider requesting is the one who accepted the order
+  if (order.acceptedById !== providerId) {
+    return NextResponse.json({ error: "forbidden", message: "Only the provider who accepted this order can request payment" }, { status: 403 });
+  }
+
+  // State check: order must be accepted or picked (not delivered/cancelled/new)
+  if (!["accepted", "picked"].includes(order.status)) {
+    return NextResponse.json({ error: "invalid_state", message: `Cannot request payment on a ${order.status} order` }, { status: 400 });
+  }
+
+  // Idempotency: if payment already requested, return the existing link
+  if (order.paymentStatus === "requested" && order.upiPaymentLink) {
+    return NextResponse.json({
+      ok: true,
+      payment: {
+        amount: order.paymentAmount,
+        method: "upi",
+        status: "requested",
+        upiLink: order.upiPaymentLink,
+        upiId: order.upiId,
+      },
+      whatsappSent: false,
+      message: "Payment already requested",
+    });
+  }
+
+  // If already paid, reject
+  if (order.paymentStatus === "paid") {
+    return NextResponse.json({ error: "already_paid", message: "Payment already confirmed" }, { status: 400 });
   }
 
   // Determine amount: explicit override > order.totalAmount

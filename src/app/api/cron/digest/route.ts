@@ -5,11 +5,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-const CRON_SECRET = process.env.CRON_SECRET || "cityhelp-cron-secret-dev";
+const CRON_SECRET = process.env.CRON_SECRET || (process.env.NODE_ENV === "production" ? "" : "cityhelp-cron-secret-dev");
 
 export async function GET(req: NextRequest) {
   const authHeader = req.headers.get("authorization");
-  const secret = authHeader?.replace("Bearer ", "") || new URL(req.url).searchParams.get("secret");
+  const secret = authHeader?.replace("Bearer ", "");
+  if (process.env.NODE_ENV === "production" && !CRON_SECRET) {
+    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 });
+  }
   if (secret !== CRON_SECRET) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 
   const startOfDay = new Date();

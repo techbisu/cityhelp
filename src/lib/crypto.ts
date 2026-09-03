@@ -11,6 +11,9 @@ const DEV_FALLBACK = "cityhelp-dev-master-key-do-not-use-in-production-32b";
 
 function getKey(): Buffer {
   const raw = MASTER_KEY_ENV && MASTER_KEY_ENV.length >= 32 ? MASTER_KEY_ENV : DEV_FALLBACK;
+  if (process.env.NODE_ENV === "production" && raw === DEV_FALLBACK) {
+    throw new Error("CITYHELP_MASTER_KEY must be set in production (min 32 chars). Run: openssl rand -base64 32");
+  }
   return crypto.createHash("sha256").update(raw).digest();
 }
 

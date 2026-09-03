@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { hashPin } from "@/lib/crypto";
 import { safeParse } from "@/lib/utils";
+import { getProviderSession, getStaffSession } from "@/lib/session";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -76,16 +77,43 @@ export async function PATCH(req: NextRequest) {
   const { id, isOnline, isActive, pin, serviceIds, zone, cityId } = body;
   if (!id) return NextResponse.json({ error: "id required" }, { status: 400 });
 
+  // Auth: allow either provider session (self-update) or staff session (admin update)
+  // Provider can only update isOnline for themselves; staff can update everything
+  const providerSession = getProviderSession(req);
+  const staffSession = getStaffSession(req);
+
+  if (!providerSession && !staffSession) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Fetch the provider to check tenant
+  const targetProvider = await db.provider.findUnique({ where: { id }, select: { tenantId: true } });
+  if (!targetProvider) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Tenant isolation
+  const callerTenantId = providerSession?.tenantId || staffSession?.tenantId;
+  if (targetProvider.tenantId !== callerTenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // If provider session, can only update self + only isOnline
+  if (providerSession && providerSession.providerId !== id) {
+    return NextResponse.json({ error: "forbidden", message: "Can only update your own profile" }, { status: 403 });
+  }
+
   const update: Record<string, unknown> = {};
   if (typeof isOnline === "boolean") {
     update.isOnline = isOnline;
     update.lastSeenAt = new Date();
   }
-  if (typeof isActive === "boolean") update.isActive = isActive;
-  if (pin) update.pinHash = hashPin(pin);
-  if (serviceIds) update.serviceIds = JSON.stringify(serviceIds);
-  if (zone !== undefined) update.zone = zone;
-  if (cityId) update.cityId = cityId;
+  // Only staff can update these fields (not providers themselves)
+  if (staffSession) {
+    if (typeof isActive === "boolean") update.isActive = isActive;
+    if (pin) update.pinHash = hashPin(pin);
+    if (serviceIds) update.serviceIds = JSON.stringify(serviceIds);
+    if (zone !== undefined) update.zone = zone;
+    if (cityId) update.cityId = cityId;
+  }
 
   const provider = await db.provider.update({ where: { id }, data: update });
   return NextResponse.json({ provider });

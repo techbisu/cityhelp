@@ -44,7 +44,7 @@ export async function runAiTask<T = unknown>(
   input: { text?: string; imageUrl?: string; audioUrl?: string; history?: Array<{ role: string; content: string }> }
 ): Promise<AiTaskResult<T>> {
   const route = await db.aiTaskRoute.findUnique({
-    where: { task },
+    where: { tenantId_task: { tenantId, task } },
     include: { provider: true, fallbackProvider: true },
   });
 

@@ -105,7 +105,7 @@ export async function PATCH(req: NextRequest) {
     if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
 
     const route = await db.aiTaskRoute.upsert({
-      where: { task },
+      where: { tenantId_task: { tenantId: tenant.id, task } },
       update: {
         tenantId: tenant.id,
         providerId: providerId || null,

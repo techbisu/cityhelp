@@ -1,13 +1,16 @@
 /**
  * POST /api/billing/mark-paid
- * Super admin manual override for cash clients.
- * Body: { invoiceId }
- * Marks the invoice as paid and activates the tenant's plan.
+ * Super admin only: manual override for cash clients.
+ * REQUIRES super-admin session.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireSuperSession } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
+  const auth = requireSuperSession(req);
+  if (!auth.ok) return auth.response;
+
   const body = await req.json();
   const { invoiceId } = body;
   if (!invoiceId) return NextResponse.json({ error: "invoiceId required" }, { status: 400 });
@@ -15,6 +18,7 @@ export async function POST(req: NextRequest) {
   const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
   if (!invoice) return NextResponse.json({ error: "invoice not found" }, { status: 404 });
 
+  // Idempotency: if already paid, return success
   if (invoice.status === "paid") {
     return NextResponse.json({ ok: true, message: "already_paid" });
   }
@@ -44,7 +48,7 @@ export async function POST(req: NextRequest) {
   await db.auditLog.create({
     data: {
       tenantId: invoice.tenantId,
-      actor: "superadmin",
+      actor: `superadmin:${auth.session.superAdminId}`,
       action: "mark_paid",
       entity: "invoice",
       entityId: invoice.id,

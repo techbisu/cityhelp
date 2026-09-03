@@ -42,18 +42,37 @@ export async function POST(
     }
   }
 
-  // Verify provider
+  // Verify provider belongs to same tenant
   const provider = await db.provider.findUnique({ where: { id: providerId }, select: { tenantId: true, name: true } });
   if (!provider || provider.tenantId !== order.tenantId) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
-  // Convert rupees to paise
-  const toPaise = (r: number | string | undefined) => r ? Math.round(parseFloat(String(r)) * 100) : 0;
+  // CRITICAL: verify the provider setting charges is the one who accepted the order
+  if (order.acceptedById !== providerId) {
+    return NextResponse.json({ error: "forbidden", message: "Only the provider who accepted this order can set charges" }, { status: 403 });
+  }
+
+  // State check: order must be accepted or picked
+  if (!["accepted", "picked"].includes(order.status)) {
+    return NextResponse.json({ error: "invalid_state", message: `Cannot set charges on a ${order.status} order` }, { status: 400 });
+  }
+
+  // Convert rupees to paise — validate input
+  const toPaise = (r: number | string | undefined) => {
+    if (r === undefined || r === "" || r === null) return 0;
+    const n = parseFloat(String(r));
+    if (!Number.isFinite(n) || n < 0) return NaN;
+    return Math.round(n * 100);
+  };
   const dc = toPaise(deliveryCharge);
   const sc = toPaise(serviceCharge);
   const ac = toPaise(addonsCharge);
   const it = toPaise(itemsTotal);
+  // Validate no NaN values
+  if ([dc, sc, ac, it].some((v) => Number.isNaN(v))) {
+    return NextResponse.json({ error: "invalid_amount", message: "All charge values must be valid non-negative numbers" }, { status: 400 });
+  }
   const total = dc + sc + ac + it;
 
   // Save charges

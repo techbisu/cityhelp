@@ -1,14 +1,22 @@
 /**
  * POST /api/providers/login — phone + PIN login with lockout
+ * Sets a signed httpOnly session cookie on success.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { verifyPin } from "@/lib/crypto";
+import { setSessionCookie, type ProviderSession } from "@/lib/session";
+import { rateLimitOr429, getClientIp } from "@/lib/rate-limit";
 
 const MAX_ATTEMPTS = 5;
 const LOCK_MS = 15 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 10 login attempts per IP per 15 minutes
+  const ip = getClientIp(req);
+  const rl = rateLimitOr429(req, `provider-login:${ip}`, { max: 10, windowMs: 15 * 60 * 1000 });
+  if (rl) return rl;
+
   const body = await req.json();
   const { tenantSlug, phone, pin } = body;
   if (!tenantSlug || !phone || !pin) {
@@ -16,6 +24,11 @@ export async function POST(req: NextRequest) {
   }
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+
+  // Check if tenant is suspended
+  if (tenant.status === "suspended") {
+    return NextResponse.json({ error: "tenant_suspended", message: "This account is suspended." }, { status: 403 });
+  }
 
   const provider = await db.provider.findUnique({
     where: { tenantId_phone: { tenantId: tenant.id, phone } },
@@ -58,7 +71,16 @@ export async function POST(req: NextRequest) {
     data: { pinAttempts: 0, pinLockedUntil: null, lastSeenAt: new Date() },
   });
 
-  return NextResponse.json({
+  // Create session
+  const session: ProviderSession = {
+    kind: "provider",
+    providerId: provider.id,
+    tenantId: tenant.id,
+    tenantSlug: tenant.slug,
+    phone: provider.phone,
+  };
+
+  const res = NextResponse.json({
     provider: {
       id: provider.id,
       name: provider.name,
@@ -75,4 +97,6 @@ export async function POST(req: NextRequest) {
       earnings: provider.earnings,
     },
   });
+  setSessionCookie(res, session);
+  return res;
 }

@@ -91,10 +91,7 @@ export async function POST(
         });
         return u;
       });
-      await db.provider.update({
-        where: { id: providerId },
-        data: { jobsDone: { increment: 1 } },
-      });
+      // Note: jobsDone is incremented on delivery, not on accept
       // Notify customer
       const provider = await db.provider.findUnique({ where: { id: providerId }, select: { name: true } });
       await notifyCustomer(`✅ Order #${order.code} accepted!\n${provider?.name || "Our partner"} will arrive in ~10 minutes.`);
@@ -132,19 +129,30 @@ export async function POST(
     if (!newStatus || !["picked", "delivered", "cancelled", "escalated", "quoted"].includes(newStatus)) {
       return NextResponse.json({ error: "invalid status" }, { status: 400 });
     }
+
+    // For picked/delivered: verify the caller is the provider who accepted the order
+    if (["picked", "delivered"].includes(newStatus)) {
+      if (!providerId) return NextResponse.json({ error: "providerId required" }, { status: 400 });
+      if (order.acceptedById !== providerId) {
+        return NextResponse.json({ error: "forbidden", message: "Only the provider who accepted this order can mark it " + newStatus }, { status: 403 });
+      }
+    }
+
     const update: Record<string, unknown> = { status: newStatus };
     if (newStatus === "picked") update.pickedAt = new Date();
     if (newStatus === "delivered") {
       update.deliveredAt = new Date();
-      if (order.quoteAmount) {
+      // Use paymentAmount > totalAmount > quoteAmount for LTV (fixes H26)
+      const amountForLtv = order.paymentAmount || order.totalAmount || order.quoteAmount || 0;
+      if (amountForLtv > 0) {
         await db.customer.update({
           where: { id: order.customerId },
-          data: { totalOrders: { increment: 1 }, lifetimeValue: { increment: order.quoteAmount } },
+          data: { totalOrders: { increment: 1 }, lifetimeValue: { increment: amountForLtv } },
         });
         if (order.acceptedById) {
           await db.provider.update({
             where: { id: order.acceptedById },
-            data: { earnings: { increment: order.quoteAmount } },
+            data: { earnings: { increment: amountForLtv }, jobsDone: { increment: 1 } },
           });
         }
       }

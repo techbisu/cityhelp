@@ -58,8 +58,8 @@ export function PlatformApp() {
 
   const [page, setPage] = useState<"tenants" | "plans" | "usage" | "audit" | "health">("tenants");
   const [authed, setAuthed] = useState(false);
-  const [email, setEmail] = useState("super@cityhelp.app");
-  const [password, setPassword] = useState("super1234");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 

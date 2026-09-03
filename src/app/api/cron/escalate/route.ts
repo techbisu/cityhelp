@@ -18,14 +18,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { broadcastToTenant } from "@/lib/realtime";
 
-const CRON_SECRET = process.env.CRON_SECRET || "cityhelp-cron-secret-dev";
+const CRON_SECRET = process.env.CRON_SECRET || (process.env.NODE_ENV === "production" ? "" : "cityhelp-cron-secret-dev");
 const ESCALATION_MS = 2 * 60 * 1000; // 2 minutes
 
 export async function GET(req: NextRequest) {
-  // Auth check
+  // Auth check — require Bearer header (don't accept ?secret= in query to avoid logging)
   const authHeader = req.headers.get("authorization");
-  const secretParam = new URL(req.url).searchParams.get("secret");
-  const secret = authHeader?.replace("Bearer ", "") || secretParam;
+  const secret = authHeader?.replace("Bearer ", "");
+
+  // In production, CRON_SECRET must be set
+  if (process.env.NODE_ENV === "production" && !CRON_SECRET) {
+    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 });
+  }
+
   if (secret !== CRON_SECRET) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }

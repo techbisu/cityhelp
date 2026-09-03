@@ -139,8 +139,8 @@ export function AdminApp() {
   const [cmdOpen, setCmdOpen] = useState(false);
 
   // Login state
-  const [loginEmail, setLoginEmail] = useState("owner@shanti.express");
-  const [loginPassword, setLoginPassword] = useState("demo1234");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
 

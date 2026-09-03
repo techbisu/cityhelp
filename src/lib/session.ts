@@ -59,7 +59,13 @@ function decode(token: string): Session | null {
   const [b64, sig] = token.split(".");
   if (!b64 || !sig) return null;
   const expected = sign(b64);
-  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  // timingSafeEqual throws on length mismatch — guard with try/catch
+  try {
+    if (sig.length !== expected.length) return null;
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch {
+    return null;
+  }
   try {
     const json = Buffer.from(b64, "base64url").toString("utf8");
     return JSON.parse(json) as Session;

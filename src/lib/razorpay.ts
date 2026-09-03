@@ -35,7 +35,12 @@ export function getRazorpayKeyId(): string {
 export function verifyRazorpayWebhookSignature(rawBody: string, signature: string | null): boolean {
   if (!WEBHOOK_SECRET || !signature) return false;
   const expected = crypto.createHmac("sha256", WEBHOOK_SECRET).update(rawBody).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+  try {
+    if (expected.length !== signature.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -44,7 +49,12 @@ export function verifyRazorpayWebhookSignature(rawBody: string, signature: strin
 export function verifyPaymentSignature(orderId: string, paymentId: string, signature: string): boolean {
   if (!KEY_SECRET) return false;
   const expected = crypto.createHmac("sha256", KEY_SECRET).update(`${orderId}|${paymentId}`).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+  try {
+    if (expected.length !== signature.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(signature, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 /**

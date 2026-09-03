@@ -75,8 +75,8 @@ export function ProviderApp() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
   // Login form state
-  const [loginPhone, setLoginPhone] = useState("+919811100001");
-  const [loginPin, setLoginPin] = useState("1234");
+  const [loginPhone, setLoginPhone] = useState("");
+  const [loginPin, setLoginPin] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
 
