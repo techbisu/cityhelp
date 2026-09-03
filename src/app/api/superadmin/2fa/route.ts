@@ -1,19 +1,25 @@
 /**
  * POST /api/superadmin/2fa
- * Body: { action: "enroll" | "verify" | "disable", superAdminId, token?, secret? }
+ * Body: { action: "enroll" | "verify" | "disable", token? }
  *
  * enroll: generates a new TOTP secret + QR code data URL
  * verify: confirms the 6-digit token and enables 2FA
  * disable: turns off 2FA (requires current token)
+ *
+ * Auth: requires super-admin session. Uses session.superAdminId instead of body.
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { generateSecret, generateQrCodeDataUrl, verifyTotp } from "@/lib/totp";
 import { encrypt } from "@/lib/crypto";
+import { requireSuperSession } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
+  const auth = requireSuperSession(req);
+  if (!auth.ok) return auth.response;
   const body = await req.json();
-  const { action, superAdminId, token } = body;
+  const superAdminId = auth.session.superAdminId;
+  const { action, token } = body;
 
   const sa = await db.superAdmin.findUnique({ where: { id: superAdminId } });
   if (!sa) return NextResponse.json({ error: "not found" }, { status: 404 });

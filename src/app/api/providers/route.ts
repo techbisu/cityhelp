@@ -17,8 +17,21 @@ export async function GET(req: NextRequest) {
 
   if (!tenantSlug) return NextResponse.json({ error: "tenantSlug required" }, { status: 400 });
 
+  // Auth: require staff or provider session
+  const staffSession = getStaffSession(req);
+  const providerSession = getProviderSession(req);
+  if (!staffSession && !providerSession) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+
+  // Tenant isolation
+  const callerTenantId = staffSession?.tenantId || providerSession?.tenantId;
+  if (callerTenantId !== tenant.id) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
 
   const where: Record<string, unknown> = { tenantId: tenant.id };
   if (cityId && cityId !== "all") where.cityId = cityId;

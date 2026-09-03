@@ -1,15 +1,26 @@
 /**
  * PATCH /api/services/[id]
  * Update a service's settings (charges, labels, icon, etc.)
+ * Auth: requires staff session + tenant isolation
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getStaffSession } from "@/lib/session";
 
 export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+
+  // Auth
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
+  const existing = await db.service.findUnique({ where: { id }, select: { tenantId: true } });
+  if (!existing) return NextResponse.json({ error: "not found" }, { status: 404 });
+  if (existing.tenantId !== staffSession.tenantId) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+
   const body = await req.json();
   const { icon, labels, questions, options, kind, isActive, orderIdx, defaultDeliveryCharge, defaultServiceCharge } = body;
 

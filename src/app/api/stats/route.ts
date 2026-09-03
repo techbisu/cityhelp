@@ -1,17 +1,25 @@
 /**
  * GET /api/stats?tenantSlug=&cityId=
  * Returns dashboard stat cards + sparkline data
+ * Auth: requires staff session
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getStaffSession } from "@/lib/session";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const tenantSlug = searchParams.get("tenantSlug");
   const cityId = searchParams.get("cityId");
   if (!tenantSlug) return NextResponse.json({ error: "tenantSlug required" }, { status: 400 });
+
+  // Auth
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  if (staffSession.tenantId !== tenant.id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const where: Record<string, unknown> = { tenantId: tenant.id };
   if (cityId && cityId !== "all") where.cityId = cityId;

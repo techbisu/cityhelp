@@ -1,12 +1,16 @@
 /**
  * POST /api/superadmin/impersonate
  * Body: { tenantId, action: "start" | "end" }
- * Writes audit log for impersonation start/end.
+ * Auth: requires super-admin session
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { requireSuperSession } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
+  const auth = requireSuperSession(req);
+  if (!auth.ok) return auth.response;
+
   const body = await req.json();
   const { tenantId, action } = body;
   if (!tenantId || !action) return NextResponse.json({ error: "missing fields" }, { status: 400 });
@@ -17,7 +21,7 @@ export async function POST(req: NextRequest) {
   await db.auditLog.create({
     data: {
       tenantId,
-      actor: "superadmin",
+      actor: `superadmin:${auth.session.superAdminId}`,
       action: action === "start" ? "impersonation_start" : "impersonation_end",
       entity: "tenant",
       entityId: tenantId,

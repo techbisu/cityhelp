@@ -1,17 +1,24 @@
 /**
  * GET /api/services?tenantSlug=
- * POST /api/services — create
- * PATCH /api/services — update
+ * POST /api/services — create (staff only)
+ * PATCH /api/services — update (staff only)
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { getStaffSession } from "@/lib/session";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const tenantSlug = searchParams.get("tenantSlug");
   if (!tenantSlug) return NextResponse.json({ error: "tenantSlug required" }, { status: 400 });
+
+  // Auth: staff or provider can read services
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  if (staffSession.tenantId !== tenant.id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   const services = await db.service.findMany({
     where: { tenantId: tenant.id },

@@ -1,10 +1,14 @@
 /**
  * GET /api/orders?tenantSlug=&cityId=&status=&view=
  * POST /api/orders — create new order (from bot or manual)
+ *
+ * Auth: GET requires staff or provider session; POST is open (bot calls it)
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { safeParse, reverseGeocodeStub } from "@/lib/utils";
+import { getStaffSession, getProviderSession } from "@/lib/session";
+import { createOrderWithRetry } from "@/lib/order-code";
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -17,9 +21,21 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "tenantSlug required" }, { status: 400 });
   }
 
+  // Auth: require staff or provider session
+  const staffSession = getStaffSession(req);
+  const providerSession = getProviderSession(req);
+  if (!staffSession && !providerSession) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  const callerTenantId = staffSession?.tenantId || providerSession?.tenantId;
+
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  // Tenant isolation: caller must belong to the same tenant
+  if (callerTenantId !== tenant.id) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   const where: Record<string, unknown> = { tenantId: tenant.id };
@@ -118,62 +134,57 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "no active city for tenant" }, { status: 400 });
   }
 
-  // Generate next order code
-  const lastOrder = await db.order.findFirst({
-    where: { tenantId: tenant.id },
-    orderBy: { code: "desc" },
-  });
-  const nextCode = lastOrder ? String(parseInt(lastOrder.code, 10) + 1) : "1001";
-
   // Determine area from lat/lng or text
   let area = body.addressArea;
   if (!area && addressLat && addressLng) {
     area = reverseGeocodeStub(addressLat, addressLng);
   }
 
-  // Create the order
-  const order = await db.order.create({
-    data: {
-      tenantId: tenant.id,
-      cityId,
-      customerId: customer.id,
-      serviceId: serviceId || null,
-      code: nextCode,
-      status: manualProviderId ? "accepted" : "new",
-      kind,
-      items: JSON.stringify(items),
-      description: description || null,
-      preferredShop: preferredShop || null,
-      timing: timing || null,
-      addressText: addressText || null,
-      addressArea: area || null,
-      addressLat: addressLat || null,
-      addressLng: addressLng || null,
-      mediaUrls: JSON.stringify(mediaUrls),
-      voiceTranscript: voiceTranscript || null,
-      source,
-      acceptedById: manualProviderId || null,
-      acceptedAt: manualProviderId ? new Date() : null,
-      activity: {
-        create: [
-          {
-            tenantId: tenant.id,
-            actor: source === "bot" ? "bot" : `provider:${manualProviderId || "manual"}`,
-            action: "created",
-            detail: source === "bot" ? "Created via WhatsApp" : "Manual job created",
-          },
-        ],
+  // Create the order with retry on code collision (P2002)
+  const order = await createOrderWithRetry(tenant.id, async (nextCode) => {
+    return db.order.create({
+      data: {
+        tenantId: tenant.id,
+        cityId,
+        customerId: customer.id,
+        serviceId: serviceId || null,
+        code: nextCode,
+        status: manualProviderId ? "accepted" : "new",
+        kind,
+        items: JSON.stringify(items),
+        description: description || null,
+        preferredShop: preferredShop || null,
+        timing: timing || null,
+        addressText: addressText || null,
+        addressArea: area || null,
+        addressLat: addressLat || null,
+        addressLng: addressLng || null,
+        mediaUrls: JSON.stringify(mediaUrls),
+        voiceTranscript: voiceTranscript || null,
+        source,
+        acceptedById: manualProviderId || null,
+        acceptedAt: manualProviderId ? new Date() : null,
+        activity: {
+          create: [
+            {
+              tenantId: tenant.id,
+              actor: source === "bot" ? "bot" : `provider:${manualProviderId || "manual"}`,
+              action: "created",
+              detail: source === "bot" ? "Created via WhatsApp" : "Manual job created",
+            },
+          ],
+        },
       },
-    },
-    include: {
-      customer: true,
-      service: true,
-      city: true,
-      acceptedBy: true,
-    },
+      include: {
+        customer: true,
+        service: true,
+        city: true,
+        acceptedBy: true,
+      },
+    });
   });
 
-  // If manual job, increment provider stats
+  // If manual job, increment provider stats (on delivery, not here — but keep for backward compat)
   if (manualProviderId) {
     await db.provider.update({
       where: { id: manualProviderId },

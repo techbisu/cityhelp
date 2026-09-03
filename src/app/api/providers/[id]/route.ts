@@ -1,9 +1,11 @@
 /**
  * GET /api/providers/[id] — full provider detail with active & past jobs
+ * Auth: require provider session (self) or staff session (same tenant)
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { safeParse } from "@/lib/utils";
+import { getProviderSession, getStaffSession } from "@/lib/session";
 
 export async function GET(
   req: NextRequest,
@@ -13,6 +15,13 @@ export async function GET(
   const { searchParams } = new URL(req.url);
   const includeJobs = searchParams.get("jobs") === "true";
 
+  // Auth: require provider session (self) or staff session
+  const providerSession = getProviderSession(req);
+  const staffSession = getStaffSession(req);
+  if (!providerSession && !staffSession) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const provider = await db.provider.findUnique({
     where: { id },
     include: {
@@ -21,6 +30,17 @@ export async function GET(
     },
   });
   if (!provider) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  // Tenant isolation: caller must belong to the same tenant
+  const callerTenantId = providerSession?.tenantId || staffSession?.tenantId;
+  if (provider.tenantId !== callerTenantId) {
+    return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  }
+
+  // If provider session, can only view self
+  if (providerSession && providerSession.providerId !== id) {
+    return NextResponse.json({ error: "forbidden", message: "Can only view your own profile" }, { status: 403 });
+  }
 
   let activeJobs: unknown[] = [];
   let pastJobs: unknown[] = [];

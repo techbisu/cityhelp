@@ -11,8 +11,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { createRazorpayOrder, isBillingConfigured, getRazorpayKeyId } from "@/lib/razorpay";
+import { getStaffSession } from "@/lib/session";
 
 export async function POST(req: NextRequest) {
+  // Auth
+  const staffSession = getStaffSession(req);
+  if (!staffSession) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const body = await req.json();
   const { tenantSlug, planId } = body;
   if (!tenantSlug || !planId) {
@@ -20,6 +24,7 @@ export async function POST(req: NextRequest) {
   }
   const tenant = await db.tenant.findUnique({ where: { slug: tenantSlug } });
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  if (staffSession.tenantId !== tenant.id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
   const plan = await db.plan.findUnique({ where: { id: planId } });
   if (!plan) return NextResponse.json({ error: "plan not found" }, { status: 404 });
 
