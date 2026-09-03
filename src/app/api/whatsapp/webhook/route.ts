@@ -1,29 +1,55 @@
 /**
- * GET /api/whatsapp/webhook  — WhatsApp verification handshake
- *   ?hub.mode=subscribe&hub.verify_token=<token>&hub.challenge=<num>
+ * GET /api/whatsapp/webhook  — WhatsApp verification handshake (PER-TENANT)
  *
- * POST /api/whatsapp/webhook — incoming messages/events
- *   - Verifies X-Hub-Signature-256 HMAC
- *   - Dedupes by message ID (waMessageId unique on BotSession)
- *   - Routes to the bot engine
+ *   Each tenant configures this same webhook URL in their Meta app,
+ *   with their OWN verify token. We look up the tenant by verify token.
+ *
+ *   ?hub.mode=subscribe&hub.verify_token=<tenant_token>&hub.challenge=<num>
+ *
+ * POST /api/whatsapp/webhook — incoming messages/events (PER-TENANT)
+ *
+ *   1. Extract metadata.phone_number_id from the payload
+ *   2. Look up the tenant by phone_number_id
+ *   3. Verify X-Hub-Signature-256 using THAT tenant's app_secret
+ *   4. Dedup by message ID (waMessageId)
+ *   5. Route to the bot engine for that tenant
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { verifyWhatsAppSignature, isWhatsAppConfigured } from "@/lib/whatsapp";
-import { safeParse, reverseGeocodeStub } from "@/lib/utils";
+import {
+  verifyWhatsAppSignature,
+  identifyTenantByPhoneNumberId,
+  findTenantByVerifyToken,
+  sendWhatsAppText,
+  sendWhatsAppButtons,
+  sendWhatsAppList,
+} from "@/lib/whatsapp";
 import { rateLimitOr429, getClientIp } from "@/lib/rate-limit";
 
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "cityhelp_verify_token_dev";
-
-// ── GET: verification handshake ─────────────────────────
+// ── GET: per-tenant verification handshake ──────────────
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get("hub.mode");
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    return new NextResponse(challenge || "", { status: 200, headers: { "Content-Type": "text/plain" } });
+  if (mode === "subscribe" && token) {
+    // Look up which tenant this verify token belongs to
+    const tenant = await findTenantByVerifyToken(token);
+    if (tenant) {
+      return new NextResponse(challenge || "", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+    // Also check global fallback verify token (for backwards compat / platform-level testing)
+    const globalToken = process.env.WHATSAPP_VERIFY_TOKEN;
+    if (globalToken && token === globalToken) {
+      return new NextResponse(challenge || "", {
+        status: 200,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
   }
   return NextResponse.json({ error: "verification_failed" }, { status: 403 });
 }
@@ -35,16 +61,8 @@ export async function POST(req: NextRequest) {
   const rl = rateLimitOr429(req, `wa-webhook:${ip}`, { max: 100, windowMs: 60 * 1000 });
   if (rl) return rl;
 
-  // Get raw body for signature verification
   const rawBody = await req.text();
   const signature = req.headers.get("x-hub-signature-256");
-
-  // Verify signature (skip in dev if WhatsApp isn't configured, for testing)
-  if (isWhatsAppConfigured()) {
-    if (!verifyWhatsAppSignature(rawBody, signature)) {
-      return NextResponse.json({ error: "invalid_signature" }, { status: 401 });
-    }
-  }
 
   let body: any;
   try {
@@ -68,6 +86,34 @@ export async function POST(req: NextRequest) {
         continue;
       }
 
+      // Identify the tenant by phone_number_id
+      const phoneNumberId = value.metadata?.phone_number_id;
+      if (!phoneNumberId) {
+        results.push({ ok: false, message: "no_phone_number_id" });
+        continue;
+      }
+
+      const tenantInfo = await identifyTenantByPhoneNumberId(phoneNumberId);
+      if (!tenantInfo) {
+        results.push({ ok: false, message: "tenant_not_found_for_phone_number" });
+        continue;
+      }
+
+      // Verify the signature using THIS tenant's app secret
+      if (!verifyWhatsAppSignature(rawBody, signature, tenantInfo.appSecret)) {
+        return NextResponse.json({ error: "invalid_signature" }, { status: 401 });
+      }
+
+      // Load the full tenant (with services + cities for the bot)
+      const tenant = await db.tenant.findUnique({
+        where: { id: tenantInfo.tenantId },
+        include: { services: { where: { isActive: true } }, cities: { where: { isActive: true } } },
+      });
+      if (!tenant) {
+        results.push({ ok: false, message: "tenant_not_found" });
+        continue;
+      }
+
       // Incoming messages
       const messages = value.messages || [];
       for (const msg of messages) {
@@ -84,17 +130,6 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // Resolve tenant from the WA phone number ID
-        const waPhoneNumberId = value.metadata?.phone_number_id;
-        const tenant = await db.tenant.findFirst({
-          where: { waPhoneNumberId: waPhoneNumberId || "shanti-wa-001" },
-          include: { services: { where: { isActive: true } }, cities: { where: { isActive: true } } },
-        });
-        if (!tenant) {
-          results.push({ ok: false, message: "tenant_not_found" });
-          continue;
-        }
-
         const phone = msg.from;
         if (!phone) continue;
 
@@ -107,7 +142,6 @@ export async function POST(req: NextRequest) {
             data: { tenantId: tenant.id, phone, waMessageId: msgId },
           });
         } else {
-          // Update waMessageId on the existing session (acts as dedup ledger)
           await db.botSession.update({
             where: { id: session.id },
             data: { waMessageId: msgId, lastMessageAt: new Date() },
@@ -150,17 +184,14 @@ export async function POST(req: NextRequest) {
           });
           const botData = await botRes.json();
 
-          // Send replies back via WhatsApp (if configured)
-          if (isWhatsAppConfigured()) {
-            const { sendWhatsAppText, sendWhatsAppButtons, sendWhatsAppList } = await import("@/lib/whatsapp");
-            for (const reply of botData.replies || []) {
-              if (reply.kind === "text") {
-                await sendWhatsAppText(phone, reply.text);
-              } else if (reply.kind === "buttons" && reply.buttons) {
-                await sendWhatsAppButtons(phone, reply.text, reply.buttons);
-              } else if (reply.kind === "list" && reply.sections) {
-                await sendWhatsAppList(phone, reply.text, reply.listButton || "Menu", reply.sections);
-              }
+          // Send replies back via WhatsApp using the tenant's own credentials
+          for (const reply of botData.replies || []) {
+            if (reply.kind === "text") {
+              await sendWhatsAppText(tenant.id, phone, reply.text);
+            } else if (reply.kind === "buttons" && reply.buttons) {
+              await sendWhatsAppButtons(tenant.id, phone, reply.text, reply.buttons);
+            } else if (reply.kind === "list" && reply.sections) {
+              await sendWhatsAppList(tenant.id, phone, reply.text, reply.listButton || "Menu", reply.sections);
             }
           }
           results.push({ ok: true, message: "processed" });

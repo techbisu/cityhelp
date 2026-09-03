@@ -59,8 +59,8 @@ async function main() {
       planId: starter.id,
       accentColor: "#10b981",
       waBusinessName: "Shanti Express",
-      waVerified: true,
-      waPhoneNumberId: "shanti-wa-001",
+      waVerified: false,
+      waConfigured: false,
     },
   });
   const t1Delhi = await db.city.create({ data: { tenantId: t1.id, name: "Delhi", state: "Delhi" } });
@@ -75,8 +75,8 @@ async function main() {
       planId: pro.id,
       accentColor: "#10b981",
       waBusinessName: "QuickFix",
-      waVerified: true,
-      waPhoneNumberId: "quickfix-wa-001",
+      waVerified: false,
+      waConfigured: false,
     },
   });
   const t2Mumbai = await db.city.create({ data: { tenantId: t2.id, name: "Mumbai", state: "Maharashtra" } });

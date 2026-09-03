@@ -23,7 +23,9 @@ export function OnboardingWizard({ slug, onComplete }: OnboardingWizardProps) {
   const [businessName, setBusinessName] = useState("");
   const [cityName, setCityName] = useState("");
   const [cityState, setCityState] = useState("");
-  const [waNumber, setWaNumber] = useState("");
+  const [waPhoneNumberId, setWaPhoneNumberId] = useState("");
+  const [waAccessToken, setWaAccessToken] = useState("");
+  const [waAppSecret, setWaAppSecret] = useState("");
   const [aiLabel, setAiLabel] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState("https://api.openai.com/v1");
   const [aiKey, setAiKey] = useState("");
@@ -56,9 +58,27 @@ export function OnboardingWizard({ slug, onComplete }: OnboardingWizardProps) {
           return;
         }
       }
-      if (step === 2 && waNumber) {
-        // Save WhatsApp number (would call WA Cloud API in production)
-        toast.success("WhatsApp number saved (verification simulated)");
+      if (step === 2 && waPhoneNumberId && waAccessToken && waAppSecret) {
+        // Save real WhatsApp credentials (encrypted at rest)
+        const res = await fetch("/api/whatsapp/configure", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenantSlug: slug,
+            phoneNumberId: waPhoneNumberId,
+            accessToken: waAccessToken,
+            appSecret: waAppSecret,
+            businessName,
+          }),
+        });
+        if (res.ok) {
+          toast.success("WhatsApp credentials saved (encrypted)");
+        } else {
+          const d = await res.json();
+          toast.error(d.error || "Failed to save WhatsApp credentials");
+          setLoading(false);
+          return;
+        }
       }
       if (step === 3 && aiLabel && aiKey) {
         const res = await fetch("/api/ai", {
@@ -134,19 +154,30 @@ export function OnboardingWizard({ slug, onComplete }: OnboardingWizardProps) {
 
           {step === 2 && (
             <div className="space-y-3">
+              <p className="text-xs text-muted-foreground">Connect your own WhatsApp Business number. Get these from Meta Business Suite → WhatsApp Manager.</p>
               <div>
-                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">WhatsApp business number</label>
-                <input value={waNumber} onChange={(e) => setWaNumber(e.target.value)} placeholder="+91 98XXX XXXXX" className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-emerald-500/40" />
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Phone Number ID *</label>
+                <input value={waPhoneNumberId} onChange={(e) => setWaPhoneNumberId(e.target.value)} placeholder="123456789012345" className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-emerald-500/40" />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Access Token *</label>
+                <input type="password" value={waAccessToken} onChange={(e) => setWaAccessToken(e.target.value)} placeholder="EAAG..." className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-emerald-500/40" />
+                <p className="text-[10px] text-muted-foreground mt-1">Encrypted at rest. Never shown again.</p>
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider text-muted-foreground">App Secret *</label>
+                <input type="password" value={waAppSecret} onChange={(e) => setWaAppSecret(e.target.value)} placeholder="abc123def456..." className="w-full mt-1 bg-background border border-border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:border-emerald-500/40" />
+                <p className="text-[10px] text-muted-foreground mt-1">From your Meta app settings. Used to verify webhooks.</p>
               </div>
               <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
-                <p className="font-medium mb-1">📋 Next steps (in production):</p>
+                <p className="font-medium mb-1">📋 After saving:</p>
                 <ol className="list-decimal list-inside space-y-0.5 text-emerald-300/80">
-                  <li>Connect your WhatsApp Business number via Meta Business Suite</li>
-                  <li>Add the webhook URL to your Meta app</li>
-                  <li>Set the verify token</li>
+                  <li>Copy the webhook URL and verify token from WhatsApp Settings</li>
+                  <li>Add them to your Meta app's webhook configuration</li>
+                  <li>Subscribe to <code>messages</code> and <code>message_status</code> events</li>
                 </ol>
               </div>
-              <p className="text-xs text-muted-foreground">You can skip this and connect later.</p>
+              <p className="text-xs text-muted-foreground">You can skip this and connect later from WhatsApp Settings.</p>
             </div>
           )}
 

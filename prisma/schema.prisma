@@ -51,10 +51,17 @@ model Tenant {
   // branding
   accentColor     String   @default("#10b981") // emerald
   logoUrl         String?
-  // whatsapp
-  waPhoneNumberId String?
-  waBusinessName  String?
-  waVerified      Boolean  @default(false)
+  // whatsapp — PER-TENANT credentials (each business connects their own number)
+  waPhoneNumberId   String?  // their WhatsApp phone number ID
+  waBusinessName    String?
+  waVerified        Boolean  @default(false)
+  waAccessTokenCipher String? // encrypted at rest (AES-256-GCM)
+  waAccessTokenMask String?  // ••••1234 for UI display
+  waAppSecretCipher String?  // encrypted at rest — for webhook signature verification
+  waVerifyToken     String?  // per-tenant verify token for webhook handshake
+  waConfigured      Boolean  @default(false) // true when all 4 fields are set + tested
+  waTestedAt        DateTime?
+  waTestStatus      String   @default("untested") // untested | ok | fail
   // email
   resendApiKeyMask String? // last 4 only
   // billing

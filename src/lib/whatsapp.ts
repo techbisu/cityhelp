@@ -1,63 +1,219 @@
 /**
- * CityHelp — WhatsApp Cloud API client
+ * CityHelp — WhatsApp Cloud API client (PER-TENANT)
  *
- * Handles:
- *  - Webhook signature verification (HMAC SHA-256, "sha256=" prefix)
- *  - Outbound message sending (text, interactive buttons, list)
- *  - Media download + storage (S3/Supabase in prod; local in dev)
+ * Each tenant (business) connects their OWN WhatsApp Business number:
+ *   - waPhoneNumberId   — their sender phone number ID
+ *   - waAccessToken     — their access token (encrypted at rest)
+ *   - waAppSecret       — their Meta app secret (encrypted, for webhook signature verification)
+ *   - waVerifyToken     — their custom verify token (for webhook handshake)
  *
- * Env vars:
- *   WHATSAPP_APP_SECRET         — for verifying incoming webhooks
- *   WHATSAPP_ACCESS_TOKEN       — for sending outbound messages
- *   WHATSAPP_PHONE_NUMBER_ID    — sender phone number ID
- *   WHATSAPP_API_VERSION        — default "v21.0"
+ * All send functions take a tenantId and look up the tenant's credentials from DB.
+ * Webhook verification identifies the tenant by phone_number_id, then uses that tenant's app_secret.
+ *
+ * If a tenant hasn't configured WhatsApp, send functions return { ok: false, skipped: true }
+ * and the calling code should gracefully degrade (log to console in dev).
  */
 import crypto from "crypto";
+import { db } from "./db";
+import { encrypt, decrypt, maskKey } from "./crypto";
 
-const APP_SECRET = process.env.WHATSAPP_APP_SECRET || "";
-const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || "";
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
 const API_VERSION = process.env.WHATSAPP_API_VERSION || "v21.0";
 
-export function isWhatsAppConfigured(): boolean {
-  return !!(APP_SECRET && ACCESS_TOKEN && PHONE_NUMBER_ID);
+// ── Tenant credential management ────────────────────────
+
+interface TenantWaCredentials {
+  phoneNumberId: string;
+  accessToken: string;
+  appSecret: string;
+  verifyToken: string;
 }
 
 /**
- * Verify an incoming WhatsApp webhook signature.
+ * Get a tenant's decrypted WhatsApp credentials.
+ * Returns null if not configured.
+ */
+export async function getTenantWaCredentials(tenantId: string): Promise<TenantWaCredentials | null> {
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: {
+      waPhoneNumberId: true,
+      waAccessTokenCipher: true,
+      waAppSecretCipher: true,
+      waVerifyToken: true,
+      waConfigured: true,
+    },
+  });
+  if (!tenant || !tenant.waConfigured || !tenant.waPhoneNumberId || !tenant.waAccessTokenCipher || !tenant.waAppSecretCipher) {
+    return null;
+  }
+  try {
+    return {
+      phoneNumberId: tenant.waPhoneNumberId,
+      accessToken: decrypt(tenant.waAccessTokenCipher),
+      appSecret: decrypt(tenant.waAppSecretCipher),
+      verifyToken: tenant.waVerifyToken || "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save a tenant's WhatsApp credentials (encrypts at rest).
+ */
+export async function saveTenantWaCredentials(
+  tenantId: string,
+  creds: {
+    phoneNumberId: string;
+    accessToken: string;
+    appSecret: string;
+    verifyToken?: string;
+    businessName?: string;
+  }
+): Promise<void> {
+  const verifyToken = creds.verifyToken || generateVerifyToken();
+  await db.tenant.update({
+    where: { id: tenantId },
+    data: {
+      waPhoneNumberId: creds.phoneNumberId,
+      waAccessTokenCipher: encrypt(creds.accessToken),
+      waAccessTokenMask: maskKey(creds.accessToken),
+      waAppSecretCipher: encrypt(creds.appSecret),
+      waVerifyToken: verifyToken,
+      waBusinessName: creds.businessName || null,
+      waConfigured: true,
+      waTestedAt: new Date(),
+      waTestStatus: "ok",
+    },
+  });
+}
+
+/**
+ * Clear a tenant's WhatsApp credentials.
+ */
+export async function clearTenantWaCredentials(tenantId: string): Promise<void> {
+  await db.tenant.update({
+    where: { id: tenantId },
+    data: {
+      waPhoneNumberId: null,
+      waAccessTokenCipher: null,
+      waAccessTokenMask: null,
+      waAppSecretCipher: null,
+      waVerifyToken: null,
+      waConfigured: false,
+      waVerified: false,
+      waTestStatus: "untested",
+      waTestedAt: null,
+    },
+  });
+}
+
+/**
+ * Generate a random verify token for the webhook handshake.
+ */
+export function generateVerifyToken(): string {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+// ── Per-tenant checks ───────────────────────────────────
+
+/**
+ * Check if a tenant has WhatsApp configured.
+ */
+export async function isTenantWaConfigured(tenantId: string): Promise<boolean> {
+  const tenant = await db.tenant.findUnique({
+    where: { id: tenantId },
+    select: { waConfigured: true },
+  });
+  return !!tenant?.waConfigured;
+}
+
+/**
+ * Count how many tenants have WhatsApp configured (for platform health).
+ */
+export async function getConfiguredWaTenantCount(): Promise<number> {
+  return db.tenant.count({ where: { waConfigured: true } });
+}
+
+// ── Webhook signature verification ──────────────────────
+
+/**
+ * Verify an incoming WhatsApp webhook signature using a SPECIFIC tenant's app secret.
  * WhatsApp sends X-Hub-Signature-256: "sha256=<hex>".
  *
- * Returns true if the signature matches HMAC(APP_SECRET, rawBody).
+ * The appSecret is the tenant's own Meta app secret.
  */
-export function verifyWhatsAppSignature(rawBody: string, signatureHeader: string | null): boolean {
-  if (!APP_SECRET || !signatureHeader) return false;
+export function verifyWhatsAppSignature(rawBody: string, signatureHeader: string | null, appSecret: string): boolean {
+  if (!appSecret || !signatureHeader) return false;
   const prefix = "sha256=";
   if (!signatureHeader.startsWith(prefix)) return false;
   const expected = signatureHeader.slice(prefix.length);
-  const computed = crypto.createHmac("sha256", APP_SECRET).update(rawBody).digest("hex");
-  return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(computed, "hex"));
+  const computed = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(computed, "hex"));
+  } catch {
+    return false; // length mismatch
+  }
 }
+
+/**
+ * Identify which tenant an incoming webhook is for, by looking up phone_number_id.
+ * Returns the tenant + decrypted app secret for verification.
+ */
+export async function identifyTenantByPhoneNumberId(phoneNumberId: string): Promise<{
+  tenantId: string;
+  tenantSlug: string;
+  appSecret: string;
+} | null> {
+  const tenant = await db.tenant.findFirst({
+    where: { waPhoneNumberId: phoneNumberId, waConfigured: true },
+    select: { id: true, slug: true, waAppSecretCipher: true },
+  });
+  if (!tenant || !tenant.waAppSecretCipher) return null;
+  try {
+    return {
+      tenantId: tenant.id,
+      tenantSlug: tenant.slug,
+      appSecret: decrypt(tenant.waAppSecretCipher),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find a tenant by their verify token (for the GET webhook handshake).
+ */
+export async function findTenantByVerifyToken(verifyToken: string): Promise<{ tenantId: string; tenantSlug: string } | null> {
+  const tenant = await db.tenant.findFirst({
+    where: { waVerifyToken: verifyToken, waConfigured: true },
+    select: { id: true, slug: true },
+  });
+  if (!tenant) return null;
+  return { tenantId: tenant.id, tenantSlug: tenant.slug };
+}
+
+// ── Send functions (per-tenant) ─────────────────────────
 
 interface WaSendResponse {
   ok: boolean;
+  skipped?: boolean;
   messageId?: string;
   error?: string;
 }
 
 /**
- * Send a text message via WhatsApp Cloud API.
- * phone: E.164 format, e.g. "+919833300001" (the API strips the +).
+ * Send a text message via WhatsApp Cloud API using a tenant's credentials.
  */
-export async function sendWhatsAppText(phone: string, text: string): Promise<WaSendResponse> {
-  if (!isWhatsAppConfigured()) {
-    return { ok: false, error: "whatsapp_not_configured" };
-  }
+export async function sendWhatsAppText(tenantId: string, phone: string, text: string): Promise<WaSendResponse> {
+  const creds = await getTenantWaCredentials(tenantId);
+  if (!creds) return { ok: false, skipped: true, error: "whatsapp_not_configured" };
   try {
-    const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/${API_VERSION}/${creds.phoneNumberId}/messages`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        Authorization: `Bearer ${creds.accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -69,9 +225,7 @@ export async function sendWhatsAppText(phone: string, text: string): Promise<WaS
       }),
     });
     const data = await res.json();
-    if (!res.ok) {
-      return { ok: false, error: JSON.stringify(data) };
-    }
+    if (!res.ok) return { ok: false, error: JSON.stringify(data) };
     return { ok: true, messageId: data.messages?.[0]?.id };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "unknown" };
@@ -79,21 +233,22 @@ export async function sendWhatsAppText(phone: string, text: string): Promise<WaS
 }
 
 /**
- * Send an interactive button message.
- * buttons: [{ id, label }] — max 3.
+ * Send an interactive button message using a tenant's credentials.
  */
 export async function sendWhatsAppButtons(
+  tenantId: string,
   phone: string,
   text: string,
   buttons: Array<{ id: string; label: string }>
 ): Promise<WaSendResponse> {
-  if (!isWhatsAppConfigured()) return { ok: false, error: "whatsapp_not_configured" };
+  const creds = await getTenantWaCredentials(tenantId);
+  if (!creds) return { ok: false, skipped: true, error: "whatsapp_not_configured" };
   try {
-    const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/${API_VERSION}/${creds.phoneNumberId}/messages`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        Authorization: `Bearer ${creds.accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -122,21 +277,23 @@ export async function sendWhatsAppButtons(
 }
 
 /**
- * Send an interactive list message.
+ * Send an interactive list message using a tenant's credentials.
  */
 export async function sendWhatsAppList(
+  tenantId: string,
   phone: string,
   bodyText: string,
   buttonText: string,
   sections: Array<{ title: string; rows: Array<{ id: string; title: string; description?: string }> }>
 ): Promise<WaSendResponse> {
-  if (!isWhatsAppConfigured()) return { ok: false, error: "whatsapp_not_configured" };
+  const creds = await getTenantWaCredentials(tenantId);
+  if (!creds) return { ok: false, skipped: true, error: "whatsapp_not_configured" };
   try {
-    const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/${API_VERSION}/${creds.phoneNumberId}/messages`;
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
+        Authorization: `Bearer ${creds.accessToken}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -170,25 +327,61 @@ export async function sendWhatsAppList(
 }
 
 /**
- * Download a media asset from WhatsApp (by media ID) for storage.
- * Returns the binary buffer + mime type.
+ * Download a media asset from WhatsApp using a tenant's credentials.
  */
-export async function downloadWhatsAppMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
-  if (!isWhatsAppConfigured()) return null;
+export async function downloadWhatsAppMedia(tenantId: string, mediaId: string): Promise<{ buffer: Buffer; mimeType: string } | null> {
+  const creds = await getTenantWaCredentials(tenantId);
+  if (!creds) return null;
   try {
-    // Step 1: get the media URL
     const metaRes = await fetch(`https://graph.facebook.com/${API_VERSION}/${mediaId}`, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
     });
     const meta = await metaRes.json();
     if (!meta.url) return null;
-    // Step 2: download the binary
     const binRes = await fetch(meta.url, {
-      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
     });
     const buf = Buffer.from(await binRes.arrayBuffer());
     return { buffer: buf, mimeType: meta.mime_type || "application/octet-stream" };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Test a tenant's WhatsApp connection by sending a test message to the business number itself.
+ * Returns { ok: true } if the API accepts the request.
+ */
+export async function testTenantWaConnection(tenantId: string): Promise<{ ok: boolean; error?: string }> {
+  const creds = await getTenantWaCredentials(tenantId);
+  if (!creds) return { ok: false, error: "not_configured" };
+  try {
+    // Hit the phone number endpoint to verify the token works
+    const url = `https://graph.facebook.com/${API_VERSION}/${creds.phoneNumberId}`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      return { ok: false, error: JSON.stringify(data) };
+    }
+    const data = await res.json();
+    if (data.error) return { ok: false, error: JSON.stringify(data.error) };
+    // Mark as tested + verified
+    await db.tenant.update({
+      where: { id: tenantId },
+      data: {
+        waTestedAt: new Date(),
+        waTestStatus: "ok",
+        waVerified: true,
+      },
+    });
+    return { ok: true };
+  } catch (e) {
+    await db.tenant.update({
+      where: { id: tenantId },
+      data: { waTestedAt: new Date(), waTestStatus: "fail" },
+    });
+    return { ok: false, error: e instanceof Error ? e.message : "unknown" };
   }
 }

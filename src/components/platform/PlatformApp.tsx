@@ -530,8 +530,8 @@ function HealthPage() {
   const [health, setHealth] = useState<{ status: string; services: Record<string, string> } | null>(null);
   const [wsHealth, setWsHealth] = useState<{ ok: boolean } | null>(null);
   const [configStatus, setConfigStatus] = useState<{
-    whatsapp: boolean; sentry: boolean; email: boolean; push: boolean; billing: boolean;
-  }>({ whatsapp: false, sentry: false, email: false, push: false, billing: false });
+    whatsapp: boolean; whatsappTenantCount: number; sentry: boolean; email: boolean; push: boolean; billing: boolean;
+  }>({ whatsapp: false, whatsappTenantCount: 0, sentry: false, email: false, push: false, billing: false });
 
   useEffect(() => {
     fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d));
@@ -543,7 +543,7 @@ function HealthPage() {
     return () => clearInterval(id);
   }, []);
 
-  const { whatsapp: whatsappConfigured, sentry: sentryConfigured, email: emailConfigured, push: pushConfigured, billing: billingConfigured } = configStatus;
+  const { whatsapp: whatsappConfigured, whatsappTenantCount, sentry: sentryConfigured, email: emailConfigured, push: pushConfigured, billing: billingConfigured } = configStatus;
 
   return (
     <div className="p-4 space-y-4 max-w-2xl">
@@ -561,7 +561,7 @@ function HealthPage() {
         </div>
         <div className="space-y-2 text-xs">
           <HealthRow label="Database" status={health?.services.database} />
-          <HealthRow label="WhatsApp webhook" status={whatsappConfigured ? "ok" : "not_configured"} />
+          <HealthRow label={`WhatsApp (per-tenant: ${whatsappTenantCount} configured)`} status={whatsappConfigured ? "ok" : "not_configured"} />
           <HealthRow label="Error tracking (Sentry)" status={sentryConfigured ? "ok" : "not_configured"} />
           <HealthRow label="Email (Resend)" status={emailConfigured ? "ok" : "not_configured"} />
           <HealthRow label="Web push (VAPID)" status={pushConfigured ? "ok" : "not_configured"} />

@@ -9,7 +9,7 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { sendWhatsAppText, isWhatsAppConfigured } from "@/lib/whatsapp";
+import { sendWhatsAppText } from "@/lib/whatsapp";
 
 export async function POST(
   req: NextRequest,
@@ -45,14 +45,15 @@ export async function POST(
     }
   }
 
-  // ── Helper: notify customer via WhatsApp ──
+  // ── Helper: notify customer via WhatsApp (per-tenant credentials) ──
   async function notifyCustomer(text: string) {
-    if (!isWhatsAppConfigured()) {
-      // Dev: log only
-      console.log(`[WA:notify] ${order.customer.phone}: ${text}`);
-      return;
+    // Uses the tenant's own WhatsApp credentials; skips gracefully if not configured
+    const res = await sendWhatsAppText(order.tenantId, order.customer.phone, text);
+    if (res.skipped) {
+      // Tenant hasn't configured WhatsApp — log in dev
+      console.log(`[WA:skip] Tenant ${order.tenantId} — would notify ${order.customer.phone}: ${text}`);
     }
-    await sendWhatsAppText(order.customer.phone, text);
+    return res;
   }
 
   // ── ACCEPT ──

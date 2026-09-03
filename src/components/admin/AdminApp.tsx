@@ -338,7 +338,7 @@ export function AdminApp() {
           {page === "customers" && <CustomersPage slug={effectiveSlug} customers={customers} setCustomers={setCustomers} />}
           {page === "services" && <ServicesPage slug={effectiveSlug} services={services} setServices={setServices} />}
           {page === "cities" && <CitiesPage slug={effectiveSlug} cities={cities} setCities={setCities} />}
-          {page === "whatsapp" && <WhatsAppPage tenant={tenant} />}
+          {page === "whatsapp" && <WhatsAppPage slug={effectiveSlug} />}
           {page === "ai" && <AIPage slug={effectiveSlug} />}
           {page === "billing" && <BillingPage slug={effectiveSlug} />}
           {page === "team" && <TeamPage slug={effectiveSlug} staffEmail={adminStaffEmail} />}
@@ -1780,40 +1780,313 @@ function CitiesPage({ slug, cities, setCities }: { slug: string; cities: CityT[]
 // WhatsApp settings page
 // ─────────────────────────────────────────────────────────────
 
-function WhatsAppPage({ tenant }: { tenant: { name: string; waBusinessName: string | null; waVerified: boolean } | null }) {
+// ─────────────────────────────────────────────────────────────
+// WhatsApp settings — per-tenant configuration
+// ─────────────────────────────────────────────────────────────
+
+function WhatsAppPage({ slug }: { slug: string }) {
+  const [config, setConfig] = useState<{
+    waPhoneNumberId: string | null;
+    waBusinessName: string | null;
+    waVerified: boolean;
+    waConfigured: boolean;
+    waAccessTokenMask: string | null;
+    waVerifyToken: string | null;
+    waTestedAt: string | null;
+    waTestStatus: string;
+    hasAccessToken: boolean;
+    webhookUrl: string;
+  } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [phoneNumberId, setPhoneNumberId] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [appSecret, setAppSecret] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  const webhookUrl = config?.webhookUrl || "https://cityhelp.app/api/whatsapp/webhook";
+
+  useEffect(() => {
+    fetch(`/api/whatsapp/configure?tenantSlug=${slug}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setConfig(d.config);
+        setPhoneNumberId(d.config?.waPhoneNumberId || "");
+        setBusinessName(d.config?.waBusinessName || "");
+      });
+  }, [slug]);
+
+  async function handleSave() {
+    if (!phoneNumberId || !accessToken || !appSecret) {
+      toast.error("Phone Number ID, Access Token, and App Secret are all required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch("/api/whatsapp/configure", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantSlug: slug,
+          phoneNumberId,
+          accessToken,
+          appSecret,
+          businessName,
+        }),
+      });
+      if (res.ok) {
+        toast.success("WhatsApp credentials saved (encrypted at rest)");
+        setEditing(false);
+        setAccessToken("");
+        setAppSecret("");
+        // Refresh config
+        const d = await fetch(`/api/whatsapp/configure?tenantSlug=${slug}`).then((r) => r.json());
+        setConfig(d.config);
+      } else {
+        const d = await res.json();
+        toast.error(d.error || "Failed to save");
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    try {
+      const res = await fetch("/api/whatsapp/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantSlug: slug }),
+      });
+      const d = await res.json();
+      if (d.ok) {
+        toast.success("✓ Connection verified — WhatsApp is ready");
+        const cfg = await fetch(`/api/whatsapp/configure?tenantSlug=${slug}`).then((r) => r.json());
+        setConfig(cfg.config);
+      } else {
+        toast.error(d.error || "Connection failed — check your credentials");
+      }
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm("Disconnect WhatsApp? Your customers won't be able to order until you reconnect.")) return;
+    const res = await fetch("/api/whatsapp/configure", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tenantSlug: slug, action: "disconnect" }),
+    });
+    if (res.ok) {
+      toast.success("WhatsApp disconnected");
+      const d = await fetch(`/api/whatsapp/configure?tenantSlug=${slug}`).then((r) => r.json());
+      setConfig(d.config);
+    }
+  }
+
+  async function copyWebhookUrl() {
+    await navigator.clipboard.writeText(webhookUrl);
+    toast.success("Webhook URL copied");
+  }
+
+  async function copyVerifyToken() {
+    if (config?.waVerifyToken) {
+      await navigator.clipboard.writeText(config.waVerifyToken);
+      toast.success("Verify token copied");
+    }
+  }
+
   return (
     <div className="p-4 space-y-4 max-w-2xl">
-      <div className="p-4 rounded-xl border border-border bg-card">
+      {/* Connection status */}
+      <div className={cn(
+        "p-4 rounded-xl border",
+        config?.waConfigured && config?.waTestStatus === "ok"
+          ? "border-emerald-500/20 bg-emerald-500/5"
+          : config?.waConfigured
+          ? "border-amber-500/20 bg-amber-500/5"
+          : "border-border bg-card"
+      )}>
         <div className="flex items-center justify-between mb-3">
           <div>
             <p className="text-sm font-medium">WhatsApp Business connection</p>
-            <p className="text-xs text-muted-foreground">Status of your WhatsApp Cloud API connection</p>
+            <p className="text-xs text-muted-foreground">
+              {config?.waConfigured
+                ? `Connected${config.waBusinessName ? ` as ${config.waBusinessName}` : ""}`
+                : "Not connected — your customers can't order yet"}
+            </p>
           </div>
-          {tenant?.waVerified ? (
-            <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center gap-1">
-              <CheckCircle2 className="w-3 h-3" /> Connected
-            </span>
+          {config?.waConfigured ? (
+            config.waTestStatus === "ok" ? (
+              <span className="text-xs px-2 py-1 rounded-full bg-emerald-500/15 text-emerald-300 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> Connected
+              </span>
+            ) : (
+              <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300">Test needed</span>
+            )
           ) : (
-            <span className="text-xs px-2 py-1 rounded-full bg-amber-500/15 text-amber-300">Pending</span>
+            <span className="text-xs px-2 py-1 rounded-full bg-zinc-500/15 text-zinc-400">Not configured</span>
           )}
         </div>
-        <div className="space-y-2 text-xs">
-          <Row label="Business name" value={tenant?.waBusinessName || "—"} />
-          <Row label="Phone number ID" value="shanti-wa-001" mono />
-          <Row label="Webhook URL" value="https://cityhelp.app/api/whatsapp/webhook" mono />
-          <Row label="Verify token" value="••••••••" mono />
+
+        {config?.waConfigured && (
+          <div className="space-y-2 text-xs">
+            <Row label="Business name" value={config.waBusinessName || "—"} />
+            <Row label="Phone number ID" value={config.waPhoneNumberId || "—"} mono />
+            <Row label="Access token" value={config.waAccessTokenMask || "••••"} mono />
+            <Row label="Last tested" value={config.waTestedAt ? timeAgo(config.waTestedAt) : "Never"} />
+            <Row label="Test status" value={config.waTestStatus} />
+          </div>
+        )}
+
+        <div className="flex gap-2 mt-4">
+          {config?.waConfigured ? (
+            <>
+              <button
+                onClick={handleTest}
+                disabled={testing}
+                className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium"
+              >
+                {testing ? "Testing…" : "Test connection"}
+              </button>
+              <button
+                onClick={() => setEditing(!editing)}
+                className="text-xs px-3 py-1.5 rounded-lg border border-border hover:border-emerald-500/30"
+              >
+                {editing ? "Cancel" : "Edit credentials"}
+              </button>
+              <button
+                onClick={handleDisconnect}
+                className="text-xs px-3 py-1.5 rounded-lg bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+              >
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setEditing(true)}
+              className="text-xs px-3 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-medium"
+            >
+              Connect WhatsApp
+            </button>
+          )}
         </div>
       </div>
 
+      {/* Edit / Add credentials form */}
+      {editing && (
+        <div className="p-4 rounded-xl border border-border bg-card space-y-3">
+          <p className="text-sm font-medium">{config?.waConfigured ? "Update credentials" : "Connect your WhatsApp Business number"}</p>
+          <p className="text-xs text-muted-foreground">
+            Each business connects their own WhatsApp number. Get these from your Meta Business Suite → WhatsApp Manager.
+          </p>
+
+          <Field label="Business name (optional)">
+            <input value={businessName} onChange={(e) => setBusinessName(e.target.value)} placeholder="e.g. Shanti Express" className={inputCls} />
+          </Field>
+
+          <Field label="Phone Number ID *">
+            <input value={phoneNumberId} onChange={(e) => setPhoneNumberId(e.target.value)} placeholder="123456789012345" className={cn(inputCls, "font-mono")} />
+          </Field>
+
+          <Field label="Access Token *">
+            <div className="relative">
+              <input
+                type={showSecrets ? "text" : "password"}
+                value={accessToken}
+                onChange={(e) => setAccessToken(e.target.value)}
+                placeholder="EAAG..."
+                className={cn(inputCls, "font-mono pr-10")}
+              />
+              <button onClick={() => setShowSecrets(!showSecrets)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                {showSecrets ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">Encrypted at rest. Never shown again after saving.</p>
+          </Field>
+
+          <Field label="App Secret *">
+            <div className="relative">
+              <input
+                type={showSecrets ? "text" : "password"}
+                value={appSecret}
+                onChange={(e) => setAppSecret(e.target.value)}
+                placeholder="abc123def456..."
+                className={cn(inputCls, "font-mono pr-10")}
+              />
+              <button onClick={() => setShowSecrets(!showSecrets)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                {showSecrets ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <p className="text-[10px] text-muted-foreground mt-1">Used to verify incoming webhooks. From your Meta app settings.</p>
+          </Field>
+
+          <button
+            onClick={handleSave}
+            disabled={saving || !phoneNumberId || !accessToken || !appSecret}
+            className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-zinc-950 font-medium py-2.5 rounded-xl text-sm"
+          >
+            {saving ? "Saving…" : "Save credentials"}
+          </button>
+        </div>
+      )}
+
+      {/* Webhook configuration guide */}
+      <div className="p-4 rounded-xl border border-border bg-card">
+        <p className="text-sm font-medium mb-2">Webhook setup</p>
+        <p className="text-xs text-muted-foreground mb-3">
+          Configure this webhook URL in your Meta app to receive incoming messages.
+        </p>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Webhook URL</label>
+            <div className="mt-1 flex gap-2">
+              <input readOnly value={webhookUrl} className={cn(inputCls, "font-mono text-xs flex-1")} />
+              <button onClick={copyWebhookUrl} className="text-xs px-3 py-2 rounded-lg border border-border hover:border-emerald-500/30 whitespace-nowrap">
+                Copy
+              </button>
+            </div>
+          </div>
+          {config?.waVerifyToken && (
+            <div>
+              <label className="text-[11px] uppercase tracking-wider text-muted-foreground">Verify Token (for Meta app)</label>
+              <div className="mt-1 flex gap-2">
+                <input readOnly value={config.waVerifyToken} className={cn(inputCls, "font-mono text-xs flex-1")} />
+                <button onClick={copyVerifyToken} className="text-xs px-3 py-2 rounded-lg border border-border hover:border-emerald-500/30 whitespace-nowrap">
+                  Copy
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="p-3 rounded-lg bg-background text-xs space-y-1.5">
+            <p className="font-medium text-foreground">📋 Setup steps:</p>
+            <ol className="list-decimal list-inside space-y-0.5 text-muted-foreground">
+              <li>Go to Meta Business Suite → WhatsApp Manager</li>
+              <li>Copy your Phone Number ID, Access Token, and App Secret</li>
+              <li>Enter them above and click "Save credentials"</li>
+              <li>Click "Test connection" to verify</li>
+              <li>In Meta app, add the Webhook URL above with the Verify Token</li>
+              <li>Subscribe to <code className="text-emerald-300">messages</code> and <code className="text-emerald-300">message_status</code> events</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      {/* Security info */}
       <div className="p-4 rounded-xl border border-border bg-card">
         <p className="text-sm font-medium mb-2">Webhook security</p>
         <p className="text-xs text-muted-foreground mb-3">
-          Every incoming webhook is verified via X-Hub-Signature-256 HMAC check. Duplicate deliveries (same message ID) are ignored.
+          Every incoming webhook is verified via X-Hub-Signature-256 HMAC check using YOUR app secret. Duplicate deliveries (same message ID) are ignored. Rate-limited per IP.
         </p>
-        <div className="bg-background rounded-lg p-3 text-xs font-mono text-emerald-300">
-          ✓ Signature verified<br />
-          ✓ Message ID deduplicated<br />
-          ✓ Rate-limited per phone
+        <div className="bg-background rounded-lg p-3 text-xs font-mono text-emerald-300 space-y-0.5">
+          <div>✓ Signature verified (per-tenant app secret)</div>
+          <div>✓ Message ID deduplicated</div>
+          <div>✓ Rate-limited per IP (100/min)</div>
+          <div>✓ Tenant identified by phone_number_id</div>
         </div>
       </div>
     </div>
