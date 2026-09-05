@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types"],
+    "lib": ["es2022", "webworker"],
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["worker.ts"]
+}
