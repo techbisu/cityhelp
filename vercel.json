@@ -3,7 +3,7 @@
   "crons": [
     {
       "path": "/api/cron/escalate",
-      "schedule": "* 3 * * *"
+      "schedule": "30 * * * *"
     },
     {
       "path": "/api/cron/digest",
