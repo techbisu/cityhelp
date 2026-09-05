@@ -1058,7 +1058,7 @@ function buildOrderSummary(
   items: Array<{ name: string; qty?: string | number }>,
   shop: string | null,
   timing: string | null,
-  address: string,
+  address: string | null,
   area: string | null,
   lang: "en" | "hi"
 ): string {
@@ -1072,7 +1072,7 @@ function buildOrderSummary(
   ];
   if (shop) lines.push("", `🏪 Shop: ${shop}`);
   if (timing) lines.push(`⏰ Timing: ${timing}`);
-  lines.push("", `📍 Address:`, `  ${address}`);
+  lines.push("", `📍 Address:`, `  ${address || "—"}`);
   if (area) lines.push(`  Area: ${area}`);
   return lines.join("\n");
 }
