@@ -84,7 +84,7 @@ export async function runAiTask<T = unknown>(
         lastUsedAt: new Date(),
       },
     });
-    return { ...result, providerLabel: route.provider.label, modelName: route.modelName };
+    return { ...result, providerLabel: route.provider.label, modelName: route.modelName || undefined };
   }
 
   // Try fallback provider if configured — separate lookup since relation isn't in schema

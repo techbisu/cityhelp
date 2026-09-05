@@ -49,6 +49,7 @@ interface Job {
   itemsTotal: number | null;
   totalAmount: number | null;
   chargesConfirmed: boolean;
+  deliveredAt: string | null;
   // payments
   paymentAmount: number | null;
   paymentMethod: string | null;

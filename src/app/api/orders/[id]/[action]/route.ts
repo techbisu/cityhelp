@@ -51,6 +51,7 @@ export async function POST(
 
   // ── Helper: notify customer via WhatsApp (per-tenant credentials) ──
   async function notifyCustomer(text: string) {
+    if (!order) return { ok: false, skipped: true };
     // Uses the tenant's own WhatsApp credentials; skips gracefully if not configured
     const res = await sendWhatsAppText(order.tenantId, order.customer.phone, text);
     if (res.skipped) {

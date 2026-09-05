@@ -130,7 +130,7 @@ export async function submitReview(
     await sendWhatsAppText(order.tenantId, order.customer.phone, message);
   }
 
-  return { ok: true, googleReviewUrl };
+  return { ok: true, googleReviewUrl: googleReviewUrl || undefined };
 }
 
 /**

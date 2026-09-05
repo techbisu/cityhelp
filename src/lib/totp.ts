@@ -1,9 +1,6 @@
 /**
  * CityHelp — 2FA (TOTP) using otplib
  * For super admin and tenant owners.
- *
- * otplib v13 uses named exports: { authenticator } from 'otplib'
- * If the authenticator export is missing, we use the TOTP class directly.
  */
 import * as OTPAuth from "otplib";
 import qrcode from "qrcode";
@@ -18,7 +15,6 @@ let totpInstance: {
 };
 
 try {
-  // v12 style: import { authenticator } from 'otplib'
   const mod = OTPAuth as unknown as { authenticator?: typeof totpInstance };
   if (mod.authenticator) {
     totpInstance = mod.authenticator;
@@ -28,11 +24,10 @@ try {
 } catch {
   // Fallback: use a simple TOTP implementation
   totpInstance = {
-    generateSecret: () => crypto.randomBytes(20).toString("base32"),
+    generateSecret: () => crypto.randomBytes(20).toString("hex"),
     keyuri: (email: string, issuer: string, secret: string) =>
       `otpauth://totp/${issuer}:${email}?secret=${secret}&issuer=${issuer}`,
     verify: ({ token, secret }: { token: string; secret: string }) => {
-      // Simple TOTP verification using crypto
       const window = 1;
       const step = 30;
       const epoch = Math.floor(Date.now() / 1000);
@@ -49,7 +44,7 @@ try {
 
 // Simple TOTP generator (RFC 6238) as fallback
 function generateTOTP(secret: string, counter: number): string {
-  const key = Buffer.from(secret, "base32");
+  const key = Buffer.from(secret, "hex");
   const buf = Buffer.alloc(8);
   buf.writeBigInt64BE(BigInt(counter));
   const hmac = crypto.createHmac("sha1", key).update(buf).digest();
