@@ -757,7 +757,7 @@ export async function POST(req: NextRequest) {
           // Show confirmation summary
           const items = safeParse<{ name: string; qty?: string | number }[]>(session.draftItems, []);
           const svc = tenant.services.find((s) => s.id === session.draftService);
-          const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, addr.text, addr.area, lang);
+          const summary = buildOrderSummary(svc, items, session.draftShop, session.draftTiming, addr.text || null, addr.area || null, lang);
           replies.push({
             kind: "buttons",
             text: `${t(tenant, lang, "confirm_title")}\n\n${summary}\n\n${t(tenant, lang, "confirm_ask")}`,
