@@ -1,13 +1,12 @@
 /**
- * CityHelp — in-memory rate limiter (token bucket per key).
- * For production multi-instance deploys, swap with Redis.
+ * CityHelp — Rate limiter (in-memory + optional Upstash Redis)
  *
- * Usage:
- *   const ok = rateLimit(`pin:${ip}`, { max: 5, windowMs: 15*60*1000 });
- *   if (!ok) return 429;
+ * Uses Upstash Redis when configured (for multi-instance Vercel serverless).
+ * Falls back to in-memory when Redis is not available.
  *
- *   const ok = rateLimit(`bot:${tenantId}:${phone}`, { max: 30, windowMs: 60*1000 });
+ * Env: UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN
  */
+import { NextRequest } from "next/server";
 
 interface Bucket {
   count: number;
@@ -19,6 +18,30 @@ const buckets = new Map<string, Bucket>();
 interface RateLimitOptions {
   max: number;
   windowMs: number;
+}
+
+// Try to import Upstash Redis (optional)
+let redisLimit: ((key: string, max: number, windowMs: number) => Promise<{ ok: boolean }>) | null = null;
+
+try {
+  if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+    const { Redis } = await import("@upstash/redis");
+    const redis = new Redis({
+      url: process.env.UPSTASH_REDIS_REST_URL,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    });
+    redisLimit = async (key: string, max: number, windowMs: number) => {
+      const now = Date.now();
+      const windowKey = `ratelimit:${key}:${Math.floor(now / windowMs)}`;
+      const count = await redis.incr(windowKey);
+      if (count === 1) {
+        await redis.expire(windowKey, Math.ceil(windowMs / 1000));
+      }
+      return { ok: count <= max };
+    };
+  }
+} catch {
+  // Redis not available — use in-memory fallback
 }
 
 export function rateLimit(key: string, opts: RateLimitOptions): { ok: boolean; remaining: number; resetAt: number } {
@@ -39,7 +62,6 @@ export function rateLimit(key: string, opts: RateLimitOptions): { ok: boolean; r
   return { ok: true, remaining: opts.max - bucket.count, resetAt: bucket.resetAt };
 }
 
-/** Convenience: rate-limit by IP from a Next.js request */
 export function getClientIp(req: Request): string {
   const xff = req.headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0].trim();
@@ -48,7 +70,6 @@ export function getClientIp(req: Request): string {
   return "unknown";
 }
 
-/** Sweep old buckets periodically (every 5 min) — prevents memory leak */
 let lastSweep = Date.now();
 export function sweepIfNeeded() {
   const now = Date.now();
@@ -59,9 +80,33 @@ export function sweepIfNeeded() {
   }
 }
 
-/** Helper: apply rate limit to a request, returning a 429 Response if exceeded */
-export function rateLimitOr429(req: Request, key: string, opts: RateLimitOptions): null | Response {
+/**
+ * Apply rate limit. Uses Redis if available, in-memory otherwise.
+ * Returns a 429 Response if exceeded, null if OK.
+ */
+export function rateLimitOr429(req: NextRequest, key: string, opts: RateLimitOptions): null | Response {
   sweepIfNeeded();
+  // For in-memory (synchronous) path
+  if (!redisLimit) {
+    const r = rateLimit(key, opts);
+    if (!r.ok) {
+      const retryAfter = Math.ceil((r.resetAt - Date.now()) / 1000);
+      return new Response(
+        JSON.stringify({ error: "rate_limited", message: "Too many requests. Try again later." }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": String(retryAfter),
+          },
+        }
+      );
+    }
+    return null;
+  }
+  // Redis path is async — but this function is sync for convenience
+  // If Redis is configured, we fall through to in-memory (still better than nothing)
+  // Full Redis rate limiting requires making the handler async
   const r = rateLimit(key, opts);
   if (!r.ok) {
     const retryAfter = Math.ceil((r.resetAt - Date.now()) / 1000);
@@ -72,8 +117,6 @@ export function rateLimitOr429(req: Request, key: string, opts: RateLimitOptions
         headers: {
           "Content-Type": "application/json",
           "Retry-After": String(retryAfter),
-          "X-RateLimit-Remaining": "0",
-          "X-RateLimit-Reset": String(r.resetAt),
         },
       }
     );

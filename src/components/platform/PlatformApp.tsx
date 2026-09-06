@@ -527,7 +527,10 @@ function HealthPage() {
     fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d));
     const id = setInterval(() => fetch("/api/health").then((r) => r.json()).then((d) => setHealth(d)), 5000);
     // Check WS health
-    fetch("http://localhost:3003/health").then((r) => r.json()).then((d) => setWsHealth(d)).catch(() => setWsHealth({ ok: false }));
+    const wsUrl = process.env.NEXT_PUBLIC_WS_SERVICE_URL;
+    if (wsUrl) {
+      fetch(`${wsUrl}/health`).then((r) => r.json()).then((d) => setWsHealth(d)).catch(() => setWsHealth({ ok: false }));
+    }
     // Check config status
     fetch("/api/health/config").then((r) => r.json()).then((d) => setConfigStatus(d)).catch(() => {});
     return () => clearInterval(id);

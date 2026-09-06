@@ -22,6 +22,20 @@ export async function GET(
   if (session.providerId !== id) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   // Query OrderBroadcast where providerId = me AND status = "pending"
+  // Lazy escalation: check for broadcast orders older than 2 minutes and escalate them
+  const escalationCutoff = new Date(Date.now() - 2 * 60 * 1000);
+  const staleOrders = await db.order.findMany({
+    where: { status: "broadcast", createdAt: { lt: escalationCutoff } },
+    select: { id: true },
+    take: 10,
+  });
+  if (staleOrders.length > 0) {
+    await db.order.updateMany({
+      where: { id: { in: staleOrders.map(o => o.id) } },
+      data: { status: "escalated", escalatedAt: new Date() },
+    });
+  }
+
   const broadcasts = await db.orderBroadcast.findMany({
     where: { providerId: id, status: "pending" },
     include: {

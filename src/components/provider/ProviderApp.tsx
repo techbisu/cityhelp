@@ -108,7 +108,10 @@ export function ProviderApp() {
   useEffect(() => {
     if (providerId) {
       refresh();
-      const id = setInterval(refresh, 4000);
+      const id = setInterval(() => {
+        if (document.hidden) return;
+        refresh();
+      }, 15000); // 15s — was 4s
       return () => clearInterval(id);
     }
   }, [providerId, refresh]);

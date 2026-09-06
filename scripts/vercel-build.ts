@@ -36,9 +36,14 @@ function main() {
   console.log("  → Running database migrations...");
   if (dbUrl.startsWith("postgresql://")) {
     try {
-      execSync("bunx prisma db push --accept-data-loss", { stdio: "inherit" });
+      execSync("bunx prisma migrate deploy", { stdio: "inherit" });
     } catch {
-      console.log("  ⚠️  db push failed — continuing build (tables may already exist)");
+      console.log("  ⚠️  Migrate deploy failed, trying db push...");
+      try {
+        execSync("bunx prisma db push", { stdio: "inherit" });
+      } catch {
+        console.log("  ⚠️  db push also failed — continuing build (tables may already exist)");
+      }
     }
   } else {
     try {

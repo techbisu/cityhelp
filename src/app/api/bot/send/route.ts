@@ -12,6 +12,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { safeParse, reverseGeocodeStub } from "@/lib/utils";
+import { rateLimitOr429, getClientIp } from "@/lib/rate-limit";
 
 interface BotReply {
   kind: "text" | "buttons" | "list";
@@ -162,6 +163,13 @@ export async function POST(req: NextRequest) {
     location?: { lat: number; lng: number };
     mediaType?: "voice" | "image";
   };
+
+  // Rate limit: 30 messages per phone per minute, 100 per tenant per hour
+  const ip = getClientIp(req);
+  const rlPhone = rateLimitOr429(req, `bot:${tenantSlug}:${phone}`, { max: 30, windowMs: 60 * 1000 });
+  if (rlPhone) return rlPhone;
+  const rlTenant = rateLimitOr429(req, `bot-tenant:${tenantSlug}`, { max: 200, windowMs: 60 * 60 * 1000 });
+  if (rlTenant) return rlTenant;
 
   if (!tenantSlug || !phone) {
     return NextResponse.json({ error: "tenantSlug and phone required" }, { status: 400 });

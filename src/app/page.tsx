@@ -2,16 +2,17 @@
 
 import { useApp } from "@/stores/app";
 import { useEffect } from "react";
-import { HomeScreen } from "@/components/shared/HomeScreen";
-import { BotApp } from "@/components/bot/BotApp";
-import { ProviderApp } from "@/components/provider/ProviderApp";
-import { AdminApp } from "@/components/admin/AdminApp";
-import { PlatformApp } from "@/components/platform/PlatformApp";
+import dynamic from "next/dynamic";
+
+const HomeScreen = dynamic(() => import("@/components/shared/HomeScreen").then(m => ({ default: m.HomeScreen })), { ssr: false });
+const BotApp = dynamic(() => import("@/components/bot/BotApp").then(m => ({ default: m.BotApp })), { ssr: false });
+const ProviderApp = dynamic(() => import("@/components/provider/ProviderApp").then(m => ({ default: m.ProviderApp })), { ssr: false });
+const AdminApp = dynamic(() => import("@/components/admin/AdminApp").then(m => ({ default: m.AdminApp })), { ssr: false });
+const PlatformApp = dynamic(() => import("@/components/platform/PlatformApp").then(m => ({ default: m.PlatformApp })), { ssr: false });
 
 export default function Home() {
   const view = useApp((s) => s.view);
 
-  // Set dark class on html persistently
   useEffect(() => {
     document.documentElement.classList.add("dark");
   }, []);
