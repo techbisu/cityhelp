@@ -43,21 +43,28 @@ export async function GET(req: NextRequest) {
   if (status && status !== "all") where.status = status;
   if (providerId) where.acceptedById = providerId;
 
+  const cursor = searchParams.get("cursor");
+  const limit = Math.min(parseInt(searchParams.get("limit") || "50", 10), 200);
+
   const orders = await db.order.findMany({
     where,
     include: {
-      customer: { select: { id: true, name: true, phone: true, language: true, addresses: true } },
+      customer: { select: { id: true, name: true, phone: true, language: true } },
       service: { select: { id: true, key: true, icon: true, labels: true } },
       city: { select: { id: true, name: true } },
       acceptedBy: { select: { id: true, name: true, phone: true, zone: true } },
-      broadcasts: { include: { provider: { select: { id: true, name: true, phone: true } } } },
-      activity: { orderBy: { createdAt: "asc" }, take: 20 },
+      // Activity is NOT included in list view — fetched on demand when order detail opens
+      // Broadcasts only need status counts, not full provider details
+      _count: { select: { broadcasts: true, activity: true } },
     },
     orderBy: { createdAt: "desc" },
-    take: 200,
+    take: limit,
+    ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
   });
 
-  return NextResponse.json({ orders });
+  const nextCursor = orders.length === limit ? orders[orders.length - 1].id : null;
+
+  return NextResponse.json({ orders, nextCursor });
 }
 
 export async function POST(req: NextRequest) {

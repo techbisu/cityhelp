@@ -14,7 +14,7 @@ export async function GET() {
       services: {
         database: "ok",
       },
-    });
+    }, { headers: { "Cache-Control": "public, s-maxage=10, stale-while-revalidate=30" } });
   } catch {
     return NextResponse.json(
       {

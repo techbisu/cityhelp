@@ -204,25 +204,39 @@ export async function POST(req: NextRequest) {
           botPayload = { message: `[${msgType}]` };
         }
 
-        // Call the bot engine (internal HTTP call to /api/bot/send)
+        // Call the bot engine — try direct function call first (for button taps),
+        // fall back to internal HTTP for full state machine
         try {
-          const botRes = await fetch(`${req.nextUrl.origin}/api/bot/send`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tenantSlug: tenant.slug, phone, ...botPayload }),
-          });
-          const botData = await botRes.json();
+          const { handleBotMessage } = await import("@/lib/bot-engine");
+          let botData: { replies: Array<{ kind: string; text: string; buttons?: unknown[]; sections?: unknown[]; listButton?: string }> };
 
-          // Send replies back via WhatsApp using the tenant's own credentials
-          for (const reply of botData.replies || []) {
-            if (reply.kind === "text") {
-              await sendWhatsAppText(tenant.id, phone, reply.text);
-            } else if (reply.kind === "buttons" && reply.buttons) {
-              await sendWhatsAppButtons(tenant.id, phone, reply.text, reply.buttons);
-            } else if (reply.kind === "list" && reply.sections) {
-              await sendWhatsAppList(tenant.id, phone, reply.text, reply.listButton || "Menu", reply.sections);
-            }
+          // Button taps (charges/rating/quotes) can be handled directly — no need for full state machine
+          const btn = botPayload.button as string | undefined;
+          if (btn && (btn.startsWith("charges_") || btn.startsWith("rate_") || btn.startsWith("quote_"))) {
+            const result = await handleBotMessage({ tenantSlug: tenant.slug, phone, ...botPayload });
+            botData = { replies: result.replies };
+          } else {
+            // Full state machine — use internal HTTP fetch (will be optimized in future)
+            const botRes = await fetch(`${req.nextUrl.origin}/api/bot/send`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ tenantSlug: tenant.slug, phone, ...botPayload }),
+            });
+            botData = await botRes.json();
           }
+
+          // Send replies back via WhatsApp — use Promise.all for parallel sends
+          const replyPromises = (botData.replies || []).map((reply) => {
+            if (reply.kind === "text") {
+              return sendWhatsAppText(tenant.id, phone, reply.text);
+            } else if (reply.kind === "buttons" && reply.buttons) {
+              return sendWhatsAppButtons(tenant.id, phone, reply.text, reply.buttons as Array<{ id: string; label: string }>);
+            } else if (reply.kind === "list" && reply.sections) {
+              return sendWhatsAppList(tenant.id, phone, reply.text, reply.listButton || "Menu", reply.sections as Array<{ title: string; rows: Array<{ id: string; title: string; description?: string }> }>);
+            }
+            return Promise.resolve();
+          });
+          await Promise.all(replyPromises);
           results.push({ ok: true, message: "processed" });
         } catch (e) {
           results.push({ ok: false, message: e instanceof Error ? e.message : "bot_error" });

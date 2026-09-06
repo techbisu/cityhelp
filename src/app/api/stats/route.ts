@@ -72,48 +72,43 @@ export async function GET(req: NextRequest) {
   // For accurate avg, would need raw SQL: AVG((julianday(acceptedAt) - julianday(createdAt)) * 86400)
   const avgAcceptSec = 0; // Placeholder — real impl needs raw SQL
 
-  // Sparkline: orders per hour for today — use count queries instead of loading rows
-  const sparkOrders: number[] = [];
-  for (let h = 0; h < 24; h++) {
+  // Sparkline: orders per hour (batch all 24 in parallel)
+  const hourPromises = Array.from({ length: 24 }, (_, h) => {
     const hourStart = new Date(startOfDay);
     hourStart.setHours(h, 0, 0, 0);
     const hourEnd = new Date(startOfDay);
     hourEnd.setHours(h, 59, 59, 999);
-    const count = await db.order.count({
-      where: { ...where, createdAt: { gte: hourStart, lte: hourEnd } },
-    });
-    sparkOrders.push(count);
-  }
+    return db.order.count({ where: { ...where, createdAt: { gte: hourStart, lte: hourEnd } } });
+  });
+  const sparkOrders = await Promise.all(hourPromises);
 
-  // Sparkline: revenue per day for last 7 days — use aggregate
-  const sparkRevenue: number[] = [];
-  for (let i = 6; i >= 0; i--) {
+  // Sparkline: revenue per day (batch all 7 in parallel)
+  const revPromises = Array.from({ length: 7 }, (_, i) => {
     const dayStart = new Date();
     dayStart.setHours(0, 0, 0, 0);
-    dayStart.setDate(dayStart.getDate() - i);
+    dayStart.setDate(dayStart.getDate() - (6 - i));
     const dayEnd = new Date(dayStart);
     dayEnd.setHours(23, 59, 59, 999);
-    const agg = await db.order.aggregate({
+    return db.order.aggregate({
       where: { ...where, status: "delivered", createdAt: { gte: dayStart, lte: dayEnd } },
       _sum: { quoteAmount: true },
-    });
-    sparkRevenue.push(agg._sum.quoteAmount || 0);
-  }
+    }).then(a => a._sum.quoteAmount || 0);
+  });
+  const sparkRevenue = await Promise.all(revPromises);
 
-  // Sparkline: escalation rate trend (last 7 days, %)
-  const sparkEscalation: number[] = [];
-  for (let i = 6; i >= 0; i--) {
+  // Sparkline: escalation rate (batch all 7 days in parallel)
+  const escPromises = Array.from({ length: 7 }, (_, i) => {
     const dayStart = new Date();
     dayStart.setHours(0, 0, 0, 0);
-    dayStart.setDate(dayStart.getDate() - i);
+    dayStart.setDate(dayStart.getDate() - (6 - i));
     const dayEnd = new Date(dayStart);
     dayEnd.setHours(23, 59, 59, 999);
-    const [dayTotal, dayEsc] = await Promise.all([
+    return Promise.all([
       db.order.count({ where: { ...where, createdAt: { gte: dayStart, lte: dayEnd } } }),
       db.order.count({ where: { ...where, createdAt: { gte: dayStart, lte: dayEnd }, OR: [{ status: "escalated" }, { status: "cancelled" }] } }),
-    ]);
-    sparkEscalation.push(dayTotal > 0 ? Math.round((dayEsc / dayTotal) * 100) : 0);
-  }
+    ]).then(([total, esc]) => total > 0 ? Math.round((esc / total) * 100) : 0);
+  });
+  const sparkEscalation = await Promise.all(escPromises);
 
   // Sparkline: avg accept time trend — use 0 (requires raw SQL for accurate calc)
   const sparkAccept = Array(7).fill(0);

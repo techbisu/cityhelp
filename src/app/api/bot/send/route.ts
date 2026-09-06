@@ -175,13 +175,28 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "tenantSlug and phone required" }, { status: 400 });
   }
 
-  const tenant = await db.tenant.findUnique({
-    where: { slug: tenantSlug },
-    include: {
-      services: { where: { isActive: true } },
-      cities: { where: { isActive: true } },
-    },
-  });
+  // Try Redis cache first, fall back to DB
+  let tenant: any = null; // eslint-disable-line @typescript-eslint/no-explicit-any
+  try {
+    const { getTenantWithServices } = await import("@/lib/cache");
+    const cached = await getTenantWithServices(tenantSlug);
+    if (cached) {
+      const fullTenant = await db.tenant.findUnique({ where: { id: cached.id }, select: { id: true, name: true, slug: true, waBusinessName: true, waConfigured: true, accentColor: true, upiId: true, upiName: true } });
+      if (fullTenant) {
+        tenant = { ...fullTenant, services: cached.services, cities: cached.cities };
+      }
+    }
+  } catch { /* cache miss — fall through to DB */ }
+
+  if (!tenant) {
+    tenant = await db.tenant.findUnique({
+      where: { slug: tenantSlug },
+      include: {
+        services: { where: { isActive: true } },
+        cities: { where: { isActive: true } },
+      },
+    });
+  }
   if (!tenant) return NextResponse.json({ error: "tenant not found" }, { status: 404 });
 
   // Find or create customer
